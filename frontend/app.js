@@ -151,6 +151,84 @@ const API = (() => {
   return { speechToText, textToSpeech, healthCheck, chat, createChat, getChats, getChatMessages, saveMessage };
 })();
 
+/* ─── Disease Check (leaf photo upload) ──────────────────── */
+const DiseaseCheck = (() => {
+  // Single constant for now — change here if a language selector is added later.
+  const LANGUAGE = "mr";
+
+  const MAX_SIDE = 1280;
+  const JPEG_QUALITY = 0.85;
+
+  // Shrink the photo in the browser before upload: at most 1280px on the
+  // longer side, re-encoded as JPEG, so slow mobile uploads stay fast.
+  function _compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let { width, height } = img;
+        const longSide = Math.max(width, height);
+        if (longSide > MAX_SIDE) {
+          const scale = MAX_SIDE / longSide;
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error("Could not process the photo."))),
+          "image/jpeg",
+          JPEG_QUALITY
+        );
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Could not read the photo."));
+      };
+
+      img.src = url;
+    });
+  }
+
+  async function checkDisease(file, crop) {
+    const apiUrl = Config.get("apiUrl");
+    const compressed = await _compressImage(file);
+
+    const formData = new FormData();
+    formData.append("image", compressed, "leaf.jpg");
+    formData.append("crop", crop);
+    formData.append("language", LANGUAGE);
+
+    const response = await fetch(`${apiUrl}/api/disease`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      // disease_api's own 400/413 errors come back as {"error": ...}; backend-raised
+      // errors (no crop, service down) come back as {"detail": ...} — check both.
+      const err = new Error(data.error || data.detail || `API Error: ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
+
+    return data;
+  }
+
+  function getLanguage() { return LANGUAGE; }
+
+  return { checkDisease, getLanguage };
+})();
+
+
 /* ─── Chat History ───────────────────────────────────────── */
 const ChatHistory = (() => {
   let currentChatId = null;
@@ -1052,9 +1130,10 @@ const App = (() => {
     _photoBtn.addEventListener("click", CropPicker.open);
     _photoInput.addEventListener("change", () => {
       const file = _photoInput.files && _photoInput.files[0];
+      const crop = _pendingCrop;
       _photoInput.value = ""; // allow picking the same file again next time
-      if (file && _pendingCrop) {
-        // TODO (Step B.3): hand file + _pendingCrop to DiseaseCheck
+      if (file && crop) {
+        _handlePhotoUpload(file, crop);
       }
     });
 
@@ -1201,6 +1280,18 @@ const App = (() => {
       _micBtn.classList.remove("processing");
       _setMicLabel("Tap to speak");
       _isProcessing = false;
+    }
+  }
+
+  // ── Leaf photo upload → disease check (temporary toast UI;
+  //    Step B.4 replaces this with a proper chat result card) ──
+  async function _handlePhotoUpload(file, crop) {
+    Toast.show(`Checking your ${crop} leaf...`, "info");
+    try {
+      const result = await DiseaseCheck.checkDisease(file, crop);
+      Toast.show(result.message, result.status === "ok" ? "success" : "info", 6000);
+    } catch (err) {
+      Toast.show("Error: " + err.message, "error", 6000);
     }
   }
 
