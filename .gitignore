@@ -5,3 +5,6 @@ backend/venv/
 __pycache__/
 *.pyc
 backend/chat_history.db
+env
+venv_old/
+disease_api/model/
