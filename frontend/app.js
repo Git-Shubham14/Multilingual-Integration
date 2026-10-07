@@ -1397,11 +1397,32 @@ const App = (() => {
       const result = await DiseaseCheck.checkDisease(file, crop);
       loadingEl.remove();
       ChatUI.addDiseaseResult(result);
+      await _speakDiseaseMessage(result);
     } catch (err) {
       loadingEl.remove();
       ChatUI.addError(_friendlyDiseaseError(err));
     } finally {
       _isProcessing = false;
+    }
+  }
+
+  // ── Speak only the result message (no percentages) ─────
+  async function _speakDiseaseMessage(result) {
+    try {
+      // disease_api's TTS only understands Marathi or English text; other
+      // languages aren't wired for speech yet (CLAUDE.md — no selector exists).
+      const isMarathi = result.language === "mr";
+      const ttsResult = await API.textToSpeech(result.message, Config.get("voice"), isMarathi);
+
+      ChatUI.addTTSResult(
+        ttsResult.marathi_text,
+        ttsResult.word_timings,
+        ttsResult.audio_base64,
+        ttsResult.voice || Config.get("voice"),
+        ttsResult.duration || 3,
+      );
+    } catch (err) {
+      console.warn("Could not speak disease result:", err);
     }
   }
 
