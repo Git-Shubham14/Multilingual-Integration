@@ -1,40 +1,148 @@
 {
-  "_comment": "Checked table for disease_api's 27 classes (disease_api/model/model_meta.json). English names are copied from the class names. Marathi/Hindi names are drafts and MUST be checked by a Marathi/Hindi speaker before this feature goes live — set reviewed to true only after that check. A wrong disease name could mislead a farmer (see CLAUDE.md).",
+  "_comment": "Checked table for disease_api's 27 classes (disease_api/model/model_meta.json). English names are copied from the class names. Every mr/hi name is reviewed:false until a Marathi/Hindi speaker (ideally with the local KVK) confirms it. source_note explains how a given name was produced, especially where it is still a transliteration of the English/scientific name rather than a real vernacular term (CLAUDE.md: a wrong disease name could mislead a farmer).",
   "crops": {
-    "Cotton": {"en": "Cotton", "mr": "कापूस", "hi": "कपास", "reviewed": false},
-    "Grape":  {"en": "Grape",  "mr": "द्राक्ष", "hi": "अंगूर", "reviewed": false},
-    "Maize":  {"en": "Maize",  "mr": "मका", "hi": "मक्का", "reviewed": false},
-    "Onion":  {"en": "Onion",  "mr": "कांदा", "hi": "प्याज", "reviewed": false},
-    "Tomato": {"en": "Tomato", "mr": "टोमॅटो", "hi": "टमाटर", "reviewed": false}
+    "Cotton": {"en": "Cotton", "mr": {"name": "कापूस", "reviewed": false}, "hi": {"name": "कपास", "reviewed": false}},
+    "Grape":  {"en": "Grape",  "mr": {"name": "द्राक्ष", "reviewed": false}, "hi": {"name": "अंगूर", "reviewed": false}},
+    "Maize":  {"en": "Maize",  "mr": {"name": "मका", "reviewed": false}, "hi": {"name": "मक्का", "reviewed": false}},
+    "Onion":  {"en": "Onion",  "mr": {"name": "कांदा", "reviewed": false}, "hi": {"name": "प्याज", "reviewed": false}},
+    "Tomato": {"en": "Tomato", "mr": {"name": "टोमॅटो", "reviewed": false}, "hi": {"name": "टमाटर", "reviewed": false}}
   },
   "diseases": {
-    "Cotton___Bacterial_Blight":       {"en": "Bacterial Blight",        "mr": "जिवाणूजन्य करपा",            "hi": "बैक्टीरियल ब्लाइट",        "reviewed": false},
-    "Cotton___Curl_Virus":             {"en": "Curl Virus",              "mr": "पाने मुरडणे विषाणू",          "hi": "पत्ती मुड़न विषाणु",         "reviewed": false},
-    "Cotton___Healthy":                {"en": "Healthy",                 "mr": "निरोगी",                     "hi": "स्वस्थ",                   "reviewed": false},
-    "Grape___Bacterial_Leaf_Spot":     {"en": "Bacterial Leaf Spot",     "mr": "जिवाणूजन्य पानावरील ठिपके",   "hi": "बैक्टीरियल पत्ती धब्बा",     "reviewed": false},
-    "Grape___Downy_Mildew":            {"en": "Downy Mildew",            "mr": "डावणी रोग",                  "hi": "डाउनी मिल्ड्यू",             "reviewed": false},
-    "Grape___Healthy":                 {"en": "Healthy",                 "mr": "निरोगी",                     "hi": "स्वस्थ",                   "reviewed": false},
-    "Grape___Powdery_Mildew":          {"en": "Powdery Mildew",          "mr": "भुरी रोग",                   "hi": "पाउडरी मिल्ड्यू",            "reviewed": false},
-    "Maize___Blight":                  {"en": "Blight",                  "mr": "करपा रोग",                   "hi": "ब्लाइट रोग",                "reviewed": false},
-    "Maize___Common_Rust":             {"en": "Common Rust",             "mr": "तांबेरा रोग",                 "hi": "रतुआ रोग",                 "reviewed": false},
-    "Maize___Gray_Leaf_Spot":          {"en": "Gray Leaf Spot",          "mr": "करड्या रंगाचे पानावरील ठिपके", "hi": "ग्रे लीफ स्पॉट",             "reviewed": false},
-    "Maize___Healthy":                 {"en": "Healthy",                 "mr": "निरोगी",                     "hi": "स्वस्थ",                   "reviewed": false},
-    "Onion___Alternaria":              {"en": "Alternaria",              "mr": "अल्टरनेरिया रोग",             "hi": "अल्टरनेरिया रोग",           "reviewed": false},
-    "Onion___Fusarium":                {"en": "Fusarium",                "mr": "फ्युजेरियम कुज रोग",           "hi": "फ्यूजेरियम रोग",             "reviewed": false},
-    "Onion___Healthy":                 {"en": "Healthy",                 "mr": "निरोगी",                     "hi": "स्वस्थ",                   "reviewed": false},
-    "Onion___Iris_Yellow_Virus":       {"en": "Iris Yellow Virus",       "mr": "आयरिस यलो व्हायरस",           "hi": "आइरिस येलो वायरस",          "reviewed": false},
-    "Onion___Purple_Blotch":           {"en": "Purple Blotch",           "mr": "जांभळा ठिपका रोग",            "hi": "पर्पल ब्लॉच रोग",            "reviewed": false},
-    "Onion___Stemphylium_Leaf_Blight": {"en": "Stemphylium Leaf Blight", "mr": "स्टेम्फिलियम करपा",           "hi": "स्टेम्फिलियम ब्लाइट",        "reviewed": false},
-    "Onion___Virosis":                 {"en": "Virosis",                 "mr": "विषाणूजन्य रोग",              "hi": "विषाणु रोग",                "reviewed": false},
-    "Tomato___Bacterial_Spot":         {"en": "Bacterial Spot",          "mr": "जिवाणूजन्य ठिपके",            "hi": "बैक्टीरियल स्पॉट",           "reviewed": false},
-    "Tomato___Early_Blight":           {"en": "Early Blight",            "mr": "लवकर येणारा करपा",            "hi": "अर्ली ब्लाइट",               "reviewed": false},
-    "Tomato___Healthy":                {"en": "Healthy",                 "mr": "निरोगी",                     "hi": "स्वस्थ",                   "reviewed": false},
-    "Tomato___Late_Blight":            {"en": "Late Blight",             "mr": "उशिरा येणारा करपा",           "hi": "लेट ब्लाइट",                "reviewed": false},
-    "Tomato___Leaf_Mold":              {"en": "Leaf Mold",               "mr": "पानावरील बुरशी",              "hi": "लीफ मोल्ड",                 "reviewed": false},
-    "Tomato___Mosaic_Virus":           {"en": "Mosaic Virus",            "mr": "मोझॅक विषाणू",                "hi": "मोज़ेक वायरस",               "reviewed": false},
-    "Tomato___Septoria_Leaf_Spot":     {"en": "Septoria Leaf Spot",      "mr": "सेप्टोरिया पानावरील ठिपके",    "hi": "सेप्टोरिया लीफ स्पॉट",       "reviewed": false},
-    "Tomato___Target_Spot":            {"en": "Target Spot",             "mr": "टार्गेट स्पॉट रोग",           "hi": "टारगेट स्पॉट",              "reviewed": false},
-    "Tomato___Yellow_Leaf_Curl_Virus": {"en": "Yellow Leaf Curl Virus",  "mr": "पिवळा पर्णगुच्छ विषाणू",       "hi": "येलो लीफ कर्ल वायरस",        "reviewed": false}
+    "Cotton___Bacterial_Blight": {
+      "en": "Bacterial Blight",
+      "mr": {"name": "जिवाणूजन्य करपा", "reviewed": false},
+      "hi": {"name": "जीवाणु झुलसा", "reviewed": false, "source_note": "Translated with standard agri vocabulary (जीवाणु=bacterial, झुलसा=blight); please verify."}
+    },
+    "Cotton___Curl_Virus": {
+      "en": "Curl Virus",
+      "mr": {"name": "पाने मुरडणे विषाणू", "reviewed": false},
+      "hi": {"name": "पत्ती मुड़न विषाणु", "reviewed": false}
+    },
+    "Cotton___Healthy": {
+      "en": "Healthy",
+      "mr": {"name": "निरोगी", "reviewed": false},
+      "hi": {"name": "स्वस्थ", "reviewed": false}
+    },
+    "Grape___Bacterial_Leaf_Spot": {
+      "en": "Bacterial Leaf Spot",
+      "mr": {"name": "जिवाणूजन्य पानावरील ठिपके", "reviewed": false},
+      "hi": {"name": "जीवाणु पत्ती धब्बा रोग", "reviewed": false, "source_note": "Translated with standard agri vocabulary; please verify."}
+    },
+    "Grape___Downy_Mildew": {
+      "en": "Downy Mildew",
+      "mr": {"name": "डावणी रोग", "reviewed": false, "source_note": "Established Marathi name used by Maharashtra grape growers (fairly confident)."},
+      "hi": {"name": "रोमिल फफूंद रोग", "reviewed": false, "source_note": "Descriptive translation attempt ('downy/hairy fungus disease'); low confidence, no confirmed standard Hindi term found — please check with KVK."}
+    },
+    "Grape___Healthy": {
+      "en": "Healthy",
+      "mr": {"name": "निरोगी", "reviewed": false},
+      "hi": {"name": "स्वस्थ", "reviewed": false}
+    },
+    "Grape___Powdery_Mildew": {
+      "en": "Powdery Mildew",
+      "mr": {"name": "भुरी रोग", "reviewed": false, "source_note": "Established Marathi name used by Maharashtra grape growers (fairly confident)."},
+      "hi": {"name": "चूर्णिल फफूंद रोग", "reviewed": false, "source_note": "Descriptive translation attempt ('powder-like fungus disease'); low confidence, no confirmed standard Hindi term found — please check with KVK."}
+    },
+    "Maize___Blight": {
+      "en": "Blight",
+      "mr": {"name": "करपा रोग", "reviewed": false},
+      "hi": {"name": "झुलसा रोग", "reviewed": false, "source_note": "Translated ('blight'); moderate confidence, commonly used in Hindi agri texts."}
+    },
+    "Maize___Common_Rust": {
+      "en": "Common Rust",
+      "mr": {"name": "तांबेरा रोग", "reviewed": false},
+      "hi": {"name": "रतुआ रोग", "reviewed": false}
+    },
+    "Maize___Gray_Leaf_Spot": {
+      "en": "Gray Leaf Spot",
+      "mr": {"name": "करड्या रंगाचे पानावरील ठिपके", "reviewed": false},
+      "hi": {"name": "धूसर पत्ती धब्बा रोग", "reviewed": false, "source_note": "Translated ('gray leaf spot'); please verify this matches local usage."}
+    },
+    "Maize___Healthy": {
+      "en": "Healthy",
+      "mr": {"name": "निरोगी", "reviewed": false},
+      "hi": {"name": "स्वस्थ", "reviewed": false}
+    },
+    "Onion___Alternaria": {
+      "en": "Alternaria",
+      "mr": {"name": "अल्टरनेरिया रोग", "reviewed": false, "source_note": "Scientific genus name kept as transliteration — no established vernacular term found. Please supply the real local name if one exists."},
+      "hi": {"name": "अल्टरनेरिया रोग", "reviewed": false, "source_note": "Scientific genus name kept as transliteration — no established vernacular term found. Please supply the real local name if one exists."}
+    },
+    "Onion___Fusarium": {
+      "en": "Fusarium",
+      "mr": {"name": "फ्युजेरियम कुज रोग", "reviewed": false, "source_note": "Genus name kept as transliteration (कुज = rot, translated); no established vernacular term found for 'Fusarium' itself."},
+      "hi": {"name": "फ्यूजेरियम रोग", "reviewed": false, "source_note": "Genus name kept as transliteration — no established vernacular term found."}
+    },
+    "Onion___Healthy": {
+      "en": "Healthy",
+      "mr": {"name": "निरोगी", "reviewed": false},
+      "hi": {"name": "स्वस्थ", "reviewed": false}
+    },
+    "Onion___Iris_Yellow_Virus": {
+      "en": "Iris Yellow Virus",
+      "mr": {"name": "आयरिस यलो विषाणू", "reviewed": false, "source_note": "'Iris' is part of the scientific name (not the flower) — no established vernacular term found; transliterated."},
+      "hi": {"name": "आइरिस यलो विषाणु", "reviewed": false, "source_note": "'Iris' is part of the scientific name (not the flower) — no established vernacular term found; transliterated."}
+    },
+    "Onion___Purple_Blotch": {
+      "en": "Purple Blotch",
+      "mr": {"name": "जांभळा ठिपका रोग", "reviewed": false, "source_note": "Direct translation ('purple spot disease'); fairly natural Marathi, please verify."},
+      "hi": {"name": "बैंगनी धब्बा रोग", "reviewed": false, "source_note": "Direct translation ('purple spot disease'); please verify this matches local usage."}
+    },
+    "Onion___Stemphylium_Leaf_Blight": {
+      "en": "Stemphylium Leaf Blight",
+      "mr": {"name": "स्टेम्फिलियम करपा", "reviewed": false, "source_note": "Genus name kept as transliteration (करपा = blight, translated); no established vernacular term found for 'Stemphylium' itself."},
+      "hi": {"name": "स्टेम्फिलियम पत्ती झुलसा", "reviewed": false, "source_note": "Genus name kept as transliteration (पत्ती झुलसा = leaf blight, translated); no established vernacular term found for 'Stemphylium' itself."}
+    },
+    "Onion___Virosis": {
+      "en": "Virosis",
+      "mr": {"name": "विषाणूजन्य रोग", "reviewed": false, "source_note": "Generic translation ('viral disease') — not specific to this one virus; please check if a more specific local name exists."},
+      "hi": {"name": "विषाणुजनित रोग", "reviewed": false, "source_note": "Generic translation ('viral disease') — not specific to this one virus; please check if a more specific local name exists."}
+    },
+    "Tomato___Bacterial_Spot": {
+      "en": "Bacterial Spot",
+      "mr": {"name": "जिवाणूजन्य ठिपके", "reviewed": false},
+      "hi": {"name": "जीवाणु धब्बा रोग", "reviewed": false, "source_note": "Translated with standard agri vocabulary; please verify."}
+    },
+    "Tomato___Early_Blight": {
+      "en": "Early Blight",
+      "mr": {"name": "लवकर येणारा करपा", "reviewed": false},
+      "hi": {"name": "अगेती झुलसा", "reviewed": false, "source_note": "Translated using the common Hindi agri term for 'early blight'; decent confidence."}
+    },
+    "Tomato___Healthy": {
+      "en": "Healthy",
+      "mr": {"name": "निरोगी", "reviewed": false},
+      "hi": {"name": "स्वस्थ", "reviewed": false}
+    },
+    "Tomato___Late_Blight": {
+      "en": "Late Blight",
+      "mr": {"name": "उशिरा येणारा करपा", "reviewed": false},
+      "hi": {"name": "पछेती झुलसा", "reviewed": false, "source_note": "Translated using the common Hindi agri term for 'late blight'; decent confidence."}
+    },
+    "Tomato___Leaf_Mold": {
+      "en": "Leaf Mold",
+      "mr": {"name": "पानावरील बुरशी", "reviewed": false},
+      "hi": {"name": "पत्ती फफूंद रोग", "reviewed": false, "source_note": "Translated ('leaf fungus disease'); please verify."}
+    },
+    "Tomato___Mosaic_Virus": {
+      "en": "Mosaic Virus",
+      "mr": {"name": "मोझॅक विषाणू", "reviewed": false, "source_note": "'मोझॅक' is a widely used loanword in Marathi agri text; kept, minor fix from वायरस to विषाणू."},
+      "hi": {"name": "मोज़ेक विषाणु", "reviewed": false, "source_note": "'मोज़ेक' is a widely used loanword in Hindi agri text; kept, minor fix from वायरस to विषाणु."}
+    },
+    "Tomato___Septoria_Leaf_Spot": {
+      "en": "Septoria Leaf Spot",
+      "mr": {"name": "सेप्टोरिया पानावरील ठिपके", "reviewed": false, "source_note": "Genus name kept as transliteration (rest translated); no established vernacular term found for 'Septoria' itself."},
+      "hi": {"name": "सेप्टोरिया पत्ती धब्बा रोग", "reviewed": false, "source_note": "Genus name kept as transliteration (rest translated); no established vernacular term found for 'Septoria' itself."}
+    },
+    "Tomato___Target_Spot": {
+      "en": "Target Spot",
+      "mr": {"name": "लक्ष्य ठिपका रोग", "reviewed": false, "source_note": "Direct translation ('target spot'); low confidence — this is an uncommon disease name, no standard local term known."},
+      "hi": {"name": "लक्ष्य धब्बा रोग", "reviewed": false, "source_note": "Direct translation ('target spot'); low confidence — this is an uncommon disease name, no standard local term known."}
+    },
+    "Tomato___Yellow_Leaf_Curl_Virus": {
+      "en": "Yellow Leaf Curl Virus",
+      "mr": {"name": "पिवळा पर्णगुच्छ विषाणू", "reviewed": false, "source_note": "Established descriptive Marathi translation ('yellow leaf-cluster virus'); decent confidence."},
+      "hi": {"name": "पीली पत्ती मुड़न विषाणु", "reviewed": false, "source_note": "Translated ('yellow leaf curl virus') using common terms; decent confidence."}
+    }
   },
   "templates": {
     "en": {
@@ -43,23 +151,26 @@
       "disease_one": "Your {crop} leaf most likely has {disease}.",
       "disease_two": "Your {crop} leaf most likely has {disease}. It could also be {second}.",
       "not_sure": "I am not sure what this is. Please take a clearer photo: daylight, close to one leaf, plain background, and keep the leaf in focus.",
-      "note_suffix": " Note: {note}"
+      "kvk_note": "Note: some viral and root diseases cannot always be confirmed from a photo — please also show the plant to your local Krishi Vigyan Kendra (KVK).",
+      "service_unavailable": "Sorry, the photo-check service is not available right now. Please try again in a little while."
     },
     "mr": {
       "healthy_word": "निरोगी",
-      "healthy": "चांगली बातमी — तुमच्या {crop} च्या पानावर कोणताही रोग दिसत नाही, ते निरोगी आहे.",
-      "disease_one": "तुमच्या {crop} च्या पानावर बहुधा {disease} हा रोग आहे.",
-      "disease_two": "तुमच्या {crop} च्या पानावर बहुधा {disease} हा रोग आहे. तो {second} देखील असू शकतो.",
+      "healthy": "तुमच्या {crop} पिकाच्या पानावर कोणताही रोग दिसत नाही, ते निरोगी दिसत आहे. ही चांगली बातमी आहे.",
+      "disease_one": "तुमच्या {crop} पिकाच्या पानावर बहुधा {disease} आहे.",
+      "disease_two": "तुमच्या {crop} पिकाच्या पानावर बहुधा {disease} आहे. दुसरी शक्यता: {second}.",
       "not_sure": "हे नक्की काय आहे ते सांगता येत नाही. कृपया दिवसाच्या उजेडात, एका पानाजवळ जाऊन, साध्या पार्श्वभूमीवर आणि स्पष्ट दिसेल असा फोटो पुन्हा काढा.",
-      "note_suffix": " सूचना: {note}"
+      "kvk_note": "सूचना: काही विषाणूजन्य आणि मुळांचे रोग फक्त फोटोवरून पूर्णपणे ओळखता येत नाहीत — कृपया रोपाची पाहणी तुमच्या जवळच्या कृषी विज्ञान केंद्राकडून (केव्हीके) करून घ्या.",
+      "service_unavailable": "माफ करा, सध्या फोटो तपासणी सेवा उपलब्ध नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा."
     },
     "hi": {
       "healthy_word": "स्वस्थ",
       "healthy": "अच्छी खबर — आपके {crop} के पत्ते पर कोई बीमारी नहीं दिख रही, यह स्वस्थ है.",
-      "disease_one": "आपके {crop} के पत्ते पर सबसे ज्यादा संभावना {disease} रोग की है.",
-      "disease_two": "आपके {crop} के पत्ते पर सबसे ज्यादा संभावना {disease} रोग की है. यह {second} भी हो सकता है.",
+      "disease_one": "आपके {crop} के पत्ते पर सबसे ज़्यादा संभावना {disease} की है.",
+      "disease_two": "आपके {crop} के पत्ते पर सबसे ज़्यादा संभावना {disease} की है. दूसरी संभावना: {second}.",
       "not_sure": "यह ठीक से पता नहीं चल पाया. कृपया दिन की रोशनी में, एक ही पत्ते के पास जाकर, सादे बैकग्राउंड में और साफ फोकस वाली फोटो फिर से लें.",
-      "note_suffix": " ध्यान दें: {note}"
+      "kvk_note": "ध्यान दें: कुछ विषाणु और जड़ से जुड़ी बीमारियाँ सिर्फ फोटो से पूरी तरह पहचानी नहीं जा सकतीं — कृपया पौधे को अपने नज़दीकी कृषि विज्ञान केंद्र (केवीके) को भी दिखाएँ.",
+      "service_unavailable": "माफ़ कीजिए, फोटो जांच सेवा अभी उपलब्ध नहीं है. कृपया कुछ समय बाद फिर से प्रयास करें."
     }
   }
 }

@@ -20,7 +20,7 @@ import httpx
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -81,12 +81,20 @@ def _load_disease_names() -> dict:
 def _disease_label(class_name: str, language: str) -> str:
     """Checked name for one of disease_api's 27 classes, e.g. 'Onion___Purple_Blotch'."""
     entry = _load_disease_names()["diseases"].get(class_name, {})
-    return entry.get(language) or entry.get("en") or class_name.split("___", 1)[-1].replace("_", " ")
+    if language != "en":
+        lang_entry = entry.get(language)
+        if lang_entry:
+            return lang_entry["name"]
+    return entry.get("en") or class_name.split("___", 1)[-1].replace("_", " ")
 
 
 def _crop_label(crop: str, language: str) -> str:
     entry = _load_disease_names()["crops"].get(crop, {})
-    return entry.get(language) or entry.get("en") or crop
+    if language != "en":
+        lang_entry = entry.get(language)
+        if lang_entry:
+            return lang_entry["name"]
+    return entry.get("en") or crop
 
 
 def _build_disease_message(result: dict, language: str) -> str:
@@ -95,6 +103,13 @@ def _build_disease_message(result: dict, language: str) -> str:
     (status, top[0], top[1], is_healthy) using the checked name table and
     fixed templates — never by machine-translating disease_api's English
     `message`, since a wrong disease name could mislead a farmer (CLAUDE.md).
+
+    The KVK note is a fixed, pre-translated sentence per language, appended
+    whenever disease_api sends a non-empty `note` — disease_api currently
+    only ever sends one note (for Onion), so this is keyed on presence, not
+    on the note's actual English text. If disease_api starts sending other
+    crop-specific notes with different meanings, this will need a real
+    per-note translation table instead of one fixed sentence.
     """
     templates = _load_disease_names()["templates"][language]
     top = result["top"]
@@ -105,13 +120,18 @@ def _build_disease_message(result: dict, language: str) -> str:
 
     crop_label = _crop_label(result["crop"], language)
     if best["is_healthy"]:
-        return templates["healthy"].format(crop=crop_label)
+        message = templates["healthy"].format(crop=crop_label)
+    else:
+        disease_label = _disease_label(best["class"], language)
+        if len(top) > 1 and top[1]["probability"] >= 0.25:
+            second = templates["healthy_word"] if top[1]["is_healthy"] else _disease_label(top[1]["class"], language)
+            message = templates["disease_two"].format(crop=crop_label, disease=disease_label, second=second)
+        else:
+            message = templates["disease_one"].format(crop=crop_label, disease=disease_label)
 
-    disease_label = _disease_label(best["class"], language)
-    if len(top) > 1 and top[1]["probability"] >= 0.25:
-        second = templates["healthy_word"] if top[1]["is_healthy"] else _disease_label(top[1]["class"], language)
-        return templates["disease_two"].format(crop=crop_label, disease=disease_label, second=second)
-    return templates["disease_one"].format(crop=crop_label, disease=disease_label)
+    if result.get("note"):
+        message += " " + templates["kvk_note"]
+    return message
 
 FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
@@ -191,6 +211,14 @@ class TextToSpeechResponse(BaseModel):
     voice: str
     success: bool = True
 
+class DiseaseTopGuess(BaseModel):
+    class_: str = Field(alias="class")
+    disease: str
+    probability: float
+
+    model_config = {"populate_by_name": True}
+
+
 class DiseaseResponse(BaseModel):
     crop: str
     status: str
@@ -199,6 +227,7 @@ class DiseaseResponse(BaseModel):
     language: str
     note: str = ""
     precautions: list = []
+    top: list[DiseaseTopGuess] = []
 
 
 class CreateChatRequest(BaseModel):
@@ -341,6 +370,9 @@ async def disease_check(
     if not image.filename:
         raise HTTPException(status_code=400, detail="Please provide a leaf photo.")
 
+    all_templates = _load_disease_names()["templates"]
+    lang = language if language in all_templates else "en"
+
     image_bytes = await image.read()
 
     try:
@@ -351,21 +383,20 @@ async def disease_check(
                 data={"crop": crop},
             )
     except httpx.ConnectError:
-        raise HTTPException(
-            status_code=503,
-            detail="Disease detection service is not running. Start it with: cd disease_api && python app.py",
+        logger.error(
+            "disease_api unreachable at %s — start it with: cd disease_api && python app.py",
+            DISEASE_API_URL,
         )
+        raise HTTPException(status_code=503, detail=all_templates[lang]["service_unavailable"])
     except httpx.RequestError as e:
         logger.error("Error contacting disease_api: %s", e)
-        raise HTTPException(status_code=503, detail="Disease detection service is unreachable.")
+        raise HTTPException(status_code=503, detail=all_templates[lang]["service_unavailable"])
 
     if disease_response.status_code != 200:
         # Pass disease_api's own error body (bad crop, unreadable image, too large) straight through.
         return JSONResponse(status_code=disease_response.status_code, content=disease_response.json())
 
     result = disease_response.json()
-    all_templates = _load_disease_names()["templates"]
-    lang = language if language in all_templates else "en"
 
     try:
         message = _build_disease_message(result, lang)
@@ -373,9 +404,13 @@ async def disease_check(
         logger.exception("Unexpected error building disease message")
         raise HTTPException(status_code=500, detail="Could not build the result message.")
 
-    note = result.get("note", "")
-    if lang == "en" and note:
-        message += all_templates["en"]["note_suffix"].format(note=note)
+    top_guesses = [
+        DiseaseTopGuess(**{"class": g["class"], "disease": _disease_label(g["class"], lang), "probability": g["probability"]})
+        for g in result["top"]
+    ]
+    # The returned note is our own translated KVK sentence, not disease_api's raw
+    # English text — keyed on presence only (see _build_disease_message's docstring).
+    note = all_templates[lang]["kvk_note"] if result.get("note") else ""
 
     return DiseaseResponse(
         crop=result["crop"],
@@ -385,6 +420,7 @@ async def disease_check(
         language=lang,
         note=note,
         precautions=result.get("precautions", []),
+        top=top_guesses,
     )
 
 
