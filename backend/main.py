@@ -5,15 +5,18 @@ Marathi-English Speech Translator PWA
 Routes:
   POST /api/speech-to-text   Audio → Marathi text + English translation
   POST /api/text-to-speech   English text → Marathi audio + word timings
+  POST /api/disease          Leaf photo + crop → disease_api (port 5002), translated to a farmer message
   GET  /api/health           Health check
 """
 
 import os
+import json
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -57,6 +60,58 @@ LANGUAGE_NAMES = {
     "mr": "Marathi", "hi": "Hindi", "en": "English", "gu": "Gujarati",
     "kn": "Kannada", "te": "Telugu", "ta": "Tamil", "bn": "Bengali", "pa": "Punjabi",
 }
+
+# ─── Disease detection (forwards to Shubham's separate Flask service) ─────────
+
+DISEASE_API_URL = os.getenv("DISEASE_API_URL", "http://127.0.0.1:5002")
+DISEASE_NAMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "disease_names.json")
+
+_disease_names: Optional[dict] = None
+
+
+def _load_disease_names() -> dict:
+    """Load backend/data/disease_names.json once and cache it in memory."""
+    global _disease_names
+    if _disease_names is None:
+        with open(DISEASE_NAMES_PATH, encoding="utf-8") as f:
+            _disease_names = json.load(f)
+    return _disease_names
+
+
+def _disease_label(class_name: str, language: str) -> str:
+    """Checked name for one of disease_api's 27 classes, e.g. 'Onion___Purple_Blotch'."""
+    entry = _load_disease_names()["diseases"].get(class_name, {})
+    return entry.get(language) or entry.get("en") or class_name.split("___", 1)[-1].replace("_", " ")
+
+
+def _crop_label(crop: str, language: str) -> str:
+    entry = _load_disease_names()["crops"].get(crop, {})
+    return entry.get(language) or entry.get("en") or crop
+
+
+def _build_disease_message(result: dict, language: str) -> str:
+    """
+    Build the farmer-facing message from disease_api's structured fields
+    (status, top[0], top[1], is_healthy) using the checked name table and
+    fixed templates — never by machine-translating disease_api's English
+    `message`, since a wrong disease name could mislead a farmer (CLAUDE.md).
+    """
+    templates = _load_disease_names()["templates"][language]
+    top = result["top"]
+    best = top[0]
+
+    if result["status"] == "not_sure":
+        return templates["not_sure"]
+
+    crop_label = _crop_label(result["crop"], language)
+    if best["is_healthy"]:
+        return templates["healthy"].format(crop=crop_label)
+
+    disease_label = _disease_label(best["class"], language)
+    if len(top) > 1 and top[1]["probability"] >= 0.25:
+        second = templates["healthy_word"] if top[1]["is_healthy"] else _disease_label(top[1]["class"], language)
+        return templates["disease_two"].format(crop=crop_label, disease=disease_label, second=second)
+    return templates["disease_one"].format(crop=crop_label, disease=disease_label)
 
 FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
@@ -135,6 +190,16 @@ class TextToSpeechResponse(BaseModel):
     duration: float
     voice: str
     success: bool = True
+
+class DiseaseResponse(BaseModel):
+    crop: str
+    status: str
+    message: str
+    is_healthy: bool
+    language: str
+    note: str = ""
+    precautions: list = []
+
 
 class CreateChatRequest(BaseModel):
     title: str
@@ -258,6 +323,69 @@ async def text_to_speech(request: TextToSpeechRequest):
     except Exception as e:
         logger.exception("Unexpected error in text-to-speech")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@app.post("/api/disease", response_model=DiseaseResponse)
+async def disease_check(
+    image: UploadFile = File(...),
+    crop: str = Form(...),
+    language: str = Form("mr"),
+):
+    """
+    Forward a leaf photo + crop to disease_api (a separate Flask service on
+    port 5002 — see disease_api/app.py) and turn its structured result into
+    a farmer-facing message in the requested language.
+    """
+    if not crop.strip():
+        raise HTTPException(status_code=400, detail="Please choose a crop.")
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Please provide a leaf photo.")
+
+    image_bytes = await image.read()
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            disease_response = await client.post(
+                f"{DISEASE_API_URL}/predict-disease",
+                files={"image": (image.filename, image_bytes, image.content_type or "image/jpeg")},
+                data={"crop": crop},
+            )
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="Disease detection service is not running. Start it with: cd disease_api && python app.py",
+        )
+    except httpx.RequestError as e:
+        logger.error("Error contacting disease_api: %s", e)
+        raise HTTPException(status_code=503, detail="Disease detection service is unreachable.")
+
+    if disease_response.status_code != 200:
+        # Pass disease_api's own error body (bad crop, unreadable image, too large) straight through.
+        return JSONResponse(status_code=disease_response.status_code, content=disease_response.json())
+
+    result = disease_response.json()
+    all_templates = _load_disease_names()["templates"]
+    lang = language if language in all_templates else "en"
+
+    try:
+        message = _build_disease_message(result, lang)
+    except Exception:
+        logger.exception("Unexpected error building disease message")
+        raise HTTPException(status_code=500, detail="Could not build the result message.")
+
+    note = result.get("note", "")
+    if lang == "en" and note:
+        message += all_templates["en"]["note_suffix"].format(note=note)
+
+    return DiseaseResponse(
+        crop=result["crop"],
+        status=result["status"],
+        message=message,
+        is_healthy=result["top"][0]["is_healthy"],
+        language=lang,
+        note=note,
+        precautions=result.get("precautions", []),
+    )
 
 
 def _get_llm_client() -> AsyncOpenAI:
