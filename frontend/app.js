@@ -961,11 +961,62 @@ const Settings = (() => {
 })();
 
 
+/* ─── Crop Picker Modal (leaf disease check) ─────────────── */
+const CropPicker = (() => {
+  let _overlay;
+  let _selectedCrop = null;
+  const CROPS = [
+    { name: "Cotton", icon: "🌱" },
+    { name: "Grape", icon: "🍇" },
+    { name: "Maize", icon: "🌽" },
+    { name: "Onion", icon: "🧅" },
+    { name: "Tomato", icon: "🍅" },
+  ];
+
+  function init(onCropChosen) {
+    _overlay = document.getElementById("crop-overlay");
+
+    const cropGrid = document.getElementById("crop-grid");
+    CROPS.forEach(({ name, icon }) => {
+      const btn = document.createElement("button");
+      btn.className = "crop-btn";
+      btn.dataset.crop = name;
+      btn.innerHTML = `<span class="crop-icon" aria-hidden="true">${icon}</span><span>${name}</span>`;
+      btn.addEventListener("click", () => {
+        _selectedCrop = name;
+        close();
+        if (onCropChosen) onCropChosen(name);
+      });
+      cropGrid.appendChild(btn);
+    });
+
+    document.getElementById("crop-close").addEventListener("click", close);
+    _overlay.addEventListener("click", (e) => {
+      if (e.target === _overlay) close();
+    });
+  }
+
+  function open() {
+    _overlay.classList.add("open");
+  }
+
+  function close() {
+    _overlay.classList.remove("open");
+  }
+
+  function getSelectedCrop() { return _selectedCrop; }
+
+  return { init, open, close, getSelectedCrop };
+})();
+
+
 /* ─── App ─────────────────────────────────────────────────── */
 const App = (() => {
   let _micBtn, _micLabel;
   let _textInput, _sendBtn;
   let _transcriptEl;
+  let _photoBtn, _photoInput;
+  let _pendingCrop = null;
   let _isProcessing = false;
   let _interimText = "";
   let _finalLiveText = "";
@@ -977,6 +1028,8 @@ const App = (() => {
     _textInput = document.getElementById("text-input");
     _sendBtn = document.getElementById("send-btn");
     _transcriptEl = document.getElementById("input-transcript");
+    _photoBtn = document.getElementById("photo-btn");
+    _photoInput = document.getElementById("photo-input");
 
     const chatArea = document.getElementById("chat-area");
     const welcomeScreen = document.getElementById("welcome-screen");
@@ -984,12 +1037,26 @@ const App = (() => {
     ChatUI.init(chatArea, welcomeScreen);
     Settings.init();
     ChatHistory.init();
+    CropPicker.init((crop) => {
+      _pendingCrop = crop;
+      _photoInput.click();
+    });
 
     // Settings button
     document.getElementById("settings-btn").addEventListener("click", Settings.open);
 
     // Mic button
     _micBtn.addEventListener("click", _toggleMic);
+
+    // Photo button (leaf disease check)
+    _photoBtn.addEventListener("click", CropPicker.open);
+    _photoInput.addEventListener("change", () => {
+      const file = _photoInput.files && _photoInput.files[0];
+      _photoInput.value = ""; // allow picking the same file again next time
+      if (file && _pendingCrop) {
+        // TODO (Step B.3): hand file + _pendingCrop to DiseaseCheck
+      }
+    });
 
     // Text input
     _textInput.addEventListener("keydown", (e) => {

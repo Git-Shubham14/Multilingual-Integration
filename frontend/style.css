@@ -1109,6 +1109,41 @@ body {
   font-weight: 600;
 }
 
+/* ── Crop Picker Modal ────────────────────────────────────── */
+.crop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-md);
+}
+
+.crop-btn {
+  padding: var(--space-lg) var(--space-sm);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  transition: var(--transition-fast);
+}
+
+.crop-btn .crop-icon {
+  font-size: 1.8rem;
+}
+
+.crop-btn:hover {
+  border-color: var(--border-accent);
+  background: rgba(255, 107, 43, 0.08);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-accent);
+}
+
 .modal-save {
   width: 100%;
   padding: 12px;

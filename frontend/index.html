@@ -212,6 +212,29 @@
 
 
   <!-- ═══════════════════════════════════════════════════════
+     CROP PICKER MODAL (leaf disease check)
+═══════════════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="crop-overlay" role="dialog" aria-modal="true" aria-labelledby="crop-modal-title">
+    <div class="modal" id="crop-modal">
+
+      <div class="modal-header">
+        <div class="modal-title" id="crop-modal-title">
+          🌿 Which crop is this leaf from?
+        </div>
+        <button class="modal-close" id="crop-close" aria-label="Close crop picker">✕</button>
+      </div>
+
+      <div class="modal-section">
+        <div class="crop-grid" id="crop-grid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════
      SCRIPTS
 ═══════════════════════════════════════════════════════ -->
   <script src="app.js"></script>
