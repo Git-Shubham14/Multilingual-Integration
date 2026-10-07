@@ -97,6 +97,15 @@ def _crop_label(crop: str, language: str) -> str:
     return entry.get("en") or crop
 
 
+def _disease_plural(class_name: str, language: str) -> bool:
+    """Whether this class's name in this language is a plural noun (default False)."""
+    if language == "en":
+        return False
+    entry = _load_disease_names()["diseases"].get(class_name, {})
+    lang_entry = entry.get(language)
+    return bool(lang_entry and lang_entry.get("plural", False))
+
+
 def _build_disease_message(result: dict, language: str) -> str:
     """
     Build the farmer-facing message from disease_api's structured fields
@@ -123,11 +132,16 @@ def _build_disease_message(result: dict, language: str) -> str:
         message = templates["healthy"].format(crop=crop_label)
     else:
         disease_label = _disease_label(best["class"], language)
+        fmt_kwargs = {"crop": crop_label, "disease": disease_label}
+        if "copula_singular" in templates:
+            plural = _disease_plural(best["class"], language)
+            fmt_kwargs["copula"] = templates["copula_plural"] if plural else templates["copula_singular"]
+
         if len(top) > 1 and top[1]["probability"] >= 0.25:
             second = templates["healthy_word"] if top[1]["is_healthy"] else _disease_label(top[1]["class"], language)
-            message = templates["disease_two"].format(crop=crop_label, disease=disease_label, second=second)
+            message = templates["disease_two"].format(**fmt_kwargs, second=second)
         else:
-            message = templates["disease_one"].format(crop=crop_label, disease=disease_label)
+            message = templates["disease_one"].format(**fmt_kwargs)
 
     if result.get("note"):
         message += " " + templates["kvk_note"]
@@ -214,6 +228,7 @@ class TextToSpeechResponse(BaseModel):
 class DiseaseTopGuess(BaseModel):
     class_: str = Field(alias="class")
     disease: str
+    disease_en: str
     probability: float
 
     model_config = {"populate_by_name": True}
@@ -405,7 +420,12 @@ async def disease_check(
         raise HTTPException(status_code=500, detail="Could not build the result message.")
 
     top_guesses = [
-        DiseaseTopGuess(**{"class": g["class"], "disease": _disease_label(g["class"], lang), "probability": g["probability"]})
+        DiseaseTopGuess(**{
+            "class": g["class"],
+            "disease": _disease_label(g["class"], lang),
+            "disease_en": _disease_label(g["class"], "en"),
+            "probability": g["probability"],
+        })
         for g in result["top"]
     ]
     # The returned note is our own translated KVK sentence, not disease_api's raw
