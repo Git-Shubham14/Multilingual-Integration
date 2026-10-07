@@ -961,6 +961,68 @@ body {
   gap: 2px;
 }
 
+/* ── Leaf Photo Bubble ─────────────────────────────────────── */
+.bubble.photo-bubble {
+  padding: var(--space-sm);
+  background: var(--bubble-user-bg);
+  border: 1px solid var(--bubble-user-border);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+}
+
+.photo-thumbnail {
+  display: block;
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+}
+
+/* ── Disease Loading Bubble ────────────────────────────────── */
+.bubble.disease-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.typing-dot-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Disease Result Bubble ─────────────────────────────────── */
+.bubble.disease-result {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08), rgba(33, 38, 45, 0.95));
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
+}
+
+.disease-message {
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.disease-guesses {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.disease-guess-row {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.disease-guess-row:first-child {
+  color: var(--saffron);
+  font-weight: 600;
+}
+
 /* ── Error Bubble ───────────────────────────────────────────── */
 .bubble.error {
   background: rgba(239, 68, 68, 0.08);

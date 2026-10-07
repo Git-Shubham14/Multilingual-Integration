@@ -946,6 +946,104 @@ const ChatUI = (() => {
   }
 
   /**
+   * Add a user leaf-photo thumbnail bubble
+   */
+  function addUserPhoto(thumbnailUrl, crop) {
+    _hideWelcome();
+    const msg = document.createElement("div");
+    msg.className = "message user";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.appendChild(_createLabel(`Leaf Photo (${crop})`));
+    const bubble = document.createElement("div");
+    bubble.className = "bubble photo-bubble";
+    const img = document.createElement("img");
+    img.className = "photo-thumbnail";
+    img.src = thumbnailUrl;
+    img.alt = `${crop} leaf photo`;
+    img.addEventListener("load", () => URL.revokeObjectURL(thumbnailUrl));
+    bubble.appendChild(img);
+    body.appendChild(bubble);
+    msg.appendChild(_createAvatar("user"));
+    msg.appendChild(body);
+    _chatArea.appendChild(msg);
+    _scrollToBottom();
+    return msg;
+  }
+
+  /**
+   * Add a "Checking your leaf..." loading bubble (bot side, returns element to remove later)
+   */
+  function addDiseaseLoading(text) {
+    _hideWelcome();
+    const msg = document.createElement("div");
+    msg.className = "message bot";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble english-translation disease-loading";
+    const label = document.createElement("span");
+    label.textContent = text;
+    bubble.appendChild(label);
+    const dotRow = document.createElement("div");
+    dotRow.className = "typing-dot-row";
+    [1, 2, 3].forEach(() => {
+      const dot = document.createElement("div");
+      dot.className = "typing-dot";
+      dotRow.appendChild(dot);
+    });
+    bubble.appendChild(dotRow);
+    body.appendChild(bubble);
+    msg.appendChild(_createAvatar("bot"));
+    msg.appendChild(body);
+    _chatArea.appendChild(msg);
+    _scrollToBottom();
+    return msg;
+  }
+
+  /**
+   * Add the disease-check result bubble (bot side).
+   * "ok": message + both guesses as "name (English name) — NN%".
+   * "not_sure": only the message, no guesses.
+   */
+  function addDiseaseResult(result) {
+    _hideWelcome();
+    const msg = document.createElement("div");
+    msg.className = "message bot";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.appendChild(_createLabel("🌿 Leaf Check Result"));
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble disease-result";
+
+    const messageEl = document.createElement("div");
+    messageEl.className = "disease-message";
+    messageEl.textContent = result.message;
+    bubble.appendChild(messageEl);
+
+    if (result.status === "ok" && Array.isArray(result.top) && result.top.length > 0) {
+      const guesses = document.createElement("div");
+      guesses.className = "disease-guesses";
+      result.top.forEach((g) => {
+        const row = document.createElement("div");
+        row.className = "disease-guess-row";
+        const pct = Math.round((g.probability || 0) * 100);
+        row.textContent = `${g.disease} (${g.disease_en}) — ${pct}%`;
+        guesses.appendChild(row);
+      });
+      bubble.appendChild(guesses);
+    }
+
+    body.appendChild(bubble);
+    msg.appendChild(_createAvatar("bot"));
+    msg.appendChild(body);
+    _chatArea.appendChild(msg);
+    _scrollToBottom();
+    return msg;
+  }
+
+  /**
    * Add an error bubble (bot side)
    */
   function addError(message) {
@@ -978,6 +1076,9 @@ const ChatUI = (() => {
     addUserText,
     addTypingBubble,
     addTTSResult,
+    addUserPhoto,
+    addDiseaseLoading,
+    addDiseaseResult,
     addError,
   };
 })();
@@ -1283,16 +1384,42 @@ const App = (() => {
     }
   }
 
-  // ── Leaf photo upload → disease check (temporary toast UI;
-  //    Step B.4 replaces this with a proper chat result card) ──
+  // ── Leaf photo upload → disease check ───────────────────
   async function _handlePhotoUpload(file, crop) {
-    Toast.show(`Checking your ${crop} leaf...`, "info");
+    if (_isProcessing) return;
+    _isProcessing = true;
+
+    const thumbnailUrl = URL.createObjectURL(file);
+    ChatUI.addUserPhoto(thumbnailUrl, crop);
+    const loadingEl = ChatUI.addDiseaseLoading("Checking your leaf...");
+
     try {
       const result = await DiseaseCheck.checkDisease(file, crop);
-      Toast.show(result.message, result.status === "ok" ? "success" : "info", 6000);
+      loadingEl.remove();
+      ChatUI.addDiseaseResult(result);
     } catch (err) {
-      Toast.show("Error: " + err.message, "error", 6000);
+      loadingEl.remove();
+      ChatUI.addError(_friendlyDiseaseError(err));
+    } finally {
+      _isProcessing = false;
     }
+  }
+
+  // ── Turn a disease-check error into a farmer-friendly message ──
+  function _friendlyDiseaseError(err) {
+    const status = err.status;
+    const raw = err.message || "";
+
+    if (status === 413) {
+      return "That photo is too large. Please use a smaller photo (under 10 MB) and try again.";
+    }
+    if (status === 400 && /readable image|JPG or PNG/i.test(raw)) {
+      return "That file doesn't look like a photo. Please upload a JPG or PNG image.";
+    }
+    if (status === 503) {
+      return "The leaf-check service isn't reachable right now. Please make sure it's running and try again.";
+    }
+    return raw || "Something went wrong while checking the leaf. Please try again.";
   }
 
   // ── Send English text → API ─────────────────────────────
