@@ -136,14 +136,14 @@ def _split_sentences(text: str, max_len: int = 180) -> list:
     return chunks
 
 
-def _gtts_chunk(text: str) -> bytes:
+def _gtts_chunk(text: str, lang: str = "mr") -> bytes:
     from gtts import gTTS
     buf = io.BytesIO()
-    gTTS(text=text, lang='mr').write_to_fp(buf)
+    gTTS(text=text, lang=lang).write_to_fp(buf)
     return buf.getvalue()
 
 
-def _synthesize_api(marathi_text: str) -> bytes:
+def _synthesize_api(marathi_text: str, lang: str = "mr") -> bytes:
     """Synthesize speech via gTTS.
 
     gTTS fetches 100-char pieces one after another, so long replies are slow.
@@ -153,8 +153,8 @@ def _synthesize_api(marathi_text: str) -> bytes:
     try:
         chunks = _split_sentences(marathi_text)
         if len(chunks) <= 1:
-            return _gtts_chunk(marathi_text)
-        return b"".join(_tts_pool.map(_gtts_chunk, chunks))
+            return _gtts_chunk(marathi_text, lang)
+        return b"".join(_tts_pool.map(lambda c: _gtts_chunk(c, lang), chunks))
     except Exception as e:
         logger.error("TTS API error: %s", e)
         raise RuntimeError(f"TTS API failed: {e}")
@@ -199,7 +199,7 @@ def _get_audio_duration(audio_bytes: bytes) -> float:
     return len(audio_bytes) / 8000.0
 
 
-async def synthesize_marathi_speech(marathi_text: str, voice: str = None) -> dict:
+async def synthesize_marathi_speech(marathi_text: str, voice: str = None, language: str = "mr") -> dict:
     """
     Main entry: convert Marathi text to speech.
     Returns: {audio_base64, sample_rate, word_timings, duration}
@@ -212,7 +212,7 @@ async def synthesize_marathi_speech(marathi_text: str, voice: str = None) -> dic
     if INFERENCE_MODE == "local":
         audio_bytes = await asyncio.to_thread(_synthesize_local, marathi_text, voice)
     else:
-        audio_bytes = await asyncio.to_thread(_synthesize_api, marathi_text)
+        audio_bytes = await asyncio.to_thread(_synthesize_api, marathi_text, language)
 
     duration = _get_audio_duration(audio_bytes)
     word_timings = _estimate_word_timings(marathi_text, duration)

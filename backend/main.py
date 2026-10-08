@@ -198,6 +198,10 @@ class TextToSpeechRequest(BaseModel):
     # When the text is already Marathi (e.g. the LLM replied in Marathi),
     # send it here to skip the EN→MR translation step.
     marathi_text: Optional[str] = None
+    # Generic path used by the frontend's language selector — skips
+    # translation entirely and speaks `text` directly in `language`.
+    text: Optional[str] = None
+    language: Optional[str] = None
     voice: Optional[str] = None
 
 
@@ -268,7 +272,7 @@ async def health_check():
 
 
 @app.post("/api/speech-to-text", response_model=SpeechToTextResponse)
-async def speech_to_text(audio: UploadFile = File(...), translate: bool = Form(True)):
+async def speech_to_text(audio: UploadFile = File(...), translate: bool = Form(True), language: str = Form("mr")):
     """
     Convert Marathi speech audio to English text.
 
@@ -287,7 +291,7 @@ async def speech_to_text(audio: UploadFile = File(...), translate: bool = Form(T
             raise HTTPException(status_code=400, detail="Audio file is too small or empty.")
 
         # Step 1: Transcribe Marathi speech → Marathi text
-        marathi_text = await transcribe_marathi(audio_bytes)
+        marathi_text = await transcribe_marathi(audio_bytes, language)
         logger.info("Transcribed: %s", marathi_text[:100])
 
         if not marathi_text.strip():
@@ -328,6 +332,8 @@ async def text_to_speech(request: TextToSpeechRequest):
       English Text → IndicTrans2 → Marathi Text → Indic Parler-TTS → Audio + Word Timings
     """
     source_text = (request.marathi_text or request.english_text or "").strip()
+    if request.text:
+        source_text = request.text.strip()
 
     if not source_text:
         raise HTTPException(status_code=400, detail="No text provided.")
@@ -338,8 +344,12 @@ async def text_to_speech(request: TextToSpeechRequest):
     logger.info("TTS request: %s", source_text[:100])
 
     try:
-        # Step 1: Translate English → Marathi (skipped when Marathi was given)
-        if request.marathi_text:
+        # Step 1: Translate English → Marathi (skipped when Marathi was given,
+        # or always skipped on the generic text+language path — the LLM
+        # already answered in the target language, so nothing to translate).
+        if request.text:
+            marathi_text = clean_for_translation(source_text) or source_text
+        elif request.marathi_text:
             marathi_text = clean_for_translation(source_text) or source_text
         else:
             marathi_text = await translate_english_to_marathi(source_text)
@@ -349,7 +359,9 @@ async def text_to_speech(request: TextToSpeechRequest):
             raise HTTPException(status_code=500, detail="Translation returned empty text.")
 
         # Step 2: Synthesize Marathi speech
-        tts_result = await synthesize_marathi_speech(marathi_text, voice=request.voice)
+        tts_result = await synthesize_marathi_speech(
+            marathi_text, voice=request.voice, language=(request.language or "mr")
+        )
 
         return TextToSpeechResponse(
             marathi_text=marathi_text,

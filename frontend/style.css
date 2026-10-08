@@ -1206,6 +1206,38 @@ body {
   box-shadow: var(--shadow-accent);
 }
 
+/* ── Language Selector ──────────────────────────────────── */
+.lang-selector {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+}
+
+.lang-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  transition: var(--transition-fast);
+}
+
+.lang-btn:hover {
+  border-color: var(--border-accent);
+}
+
+.lang-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
 .modal-save {
   width: 100%;
   padding: 12px;

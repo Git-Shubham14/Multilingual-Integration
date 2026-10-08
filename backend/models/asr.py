@@ -89,7 +89,10 @@ def _transcribe_local(audio_bytes: bytes) -> str:
     return marathi_text.strip()
 
 
-def _transcribe_api(audio_bytes: bytes) -> str:
+GOOGLE_STT_LANG_CODES = {"mr": "mr-IN", "hi": "hi-IN", "en": "en-IN"}
+
+
+def _transcribe_api(audio_bytes: bytes, language: str = "mr") -> str:
     """Transcribe via SpeechRecognition (Google API) instead of HF Inference API."""
     import speech_recognition as sr
     import io
@@ -141,7 +144,8 @@ def _transcribe_api(audio_bytes: bytes) -> str:
         with sr.AudioFile(wav_io) as source:
             audio = r.record(source)
             
-        marathi_text = r.recognize_google(audio, language="mr-IN")
+        google_lang = GOOGLE_STT_LANG_CODES.get(language, "mr-IN")
+        marathi_text = r.recognize_google(audio, language=google_lang)
         return marathi_text
     except sr.UnknownValueError:
         return ""
@@ -150,7 +154,7 @@ def _transcribe_api(audio_bytes: bytes) -> str:
         raise RuntimeError(f"ASR API failed: {e}")
 
 
-async def transcribe_marathi(audio_bytes: bytes) -> str:
+async def transcribe_marathi(audio_bytes: bytes, language: str = "mr") -> str:
     """
     Main entry: transcribe audio bytes to Marathi text.
     Handles both local and API modes.
@@ -165,4 +169,4 @@ async def transcribe_marathi(audio_bytes: bytes) -> str:
     if INFERENCE_MODE == "local":
         return await asyncio.to_thread(_transcribe_local, audio_bytes)
     else:
-        return await asyncio.to_thread(_transcribe_api, audio_bytes)
+        return await asyncio.to_thread(_transcribe_api, audio_bytes, language)

@@ -19,6 +19,7 @@ const Config = (() => {
     apiUrl: "http://localhost:8000",
     voice: "Sunita",
     hfToken: "hf_your_token_here",
+    language: "mr",
   };
 
   let _settings = { ...DEFAULTS };
@@ -49,6 +50,31 @@ const Config = (() => {
   return { get, save, load };
 })();
 
+/* ─── Language Selector (mr / hi / en) ───────────────────── */
+const LanguageSelector = (() => {
+  function getLanguage() {
+    return Config.get("language") || "mr";
+  }
+
+  function _applyActiveState(lang) {
+    document.querySelectorAll(".lang-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.lang === lang);
+    });
+  }
+
+  function init() {
+    document.querySelectorAll(".lang-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        Config.save({ language: btn.dataset.lang });
+        _applyActiveState(btn.dataset.lang);
+      });
+    });
+    _applyActiveState(getLanguage());
+  }
+
+  return { init, getLanguage };
+})();
+
 
 /* ─── API Client ─────────────────────────────────────────── */
 const API = (() => {
@@ -58,6 +84,7 @@ const API = (() => {
     formData.append("audio", audioBlob, "recording.wav");
     // The LLM understands Marathi directly — skip the MR→EN translation hop.
     formData.append("translate", "false");
+    formData.append("language", LanguageSelector.getLanguage());
 
     const response = await fetch(`${apiUrl}/api/speech-to-text`, {
       method: "POST",
@@ -72,16 +99,12 @@ const API = (() => {
     return response.json();
   }
 
-  async function textToSpeech(text, voice, isMarathi = false) {
+  async function textToSpeech(text, voice) {
     const apiUrl = Config.get("apiUrl");
     const response = await fetch(`${apiUrl}/api/text-to-speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        isMarathi
-          ? { marathi_text: text, voice: voice }
-          : { english_text: text, voice: voice }
-      ),
+      body: JSON.stringify({ text: text, language: LanguageSelector.getLanguage(), voice: voice }),
     });
 
     if (!response.ok) {
@@ -97,7 +120,7 @@ const API = (() => {
     const response = await fetch(`${apiUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, reply_language: "mr" }),
+      body: JSON.stringify({ text: text, reply_language: LanguageSelector.getLanguage() }),
     });
 
     if (!response.ok) {
@@ -153,9 +176,6 @@ const API = (() => {
 
 /* ─── Disease Check (leaf photo upload) ──────────────────── */
 const DiseaseCheck = (() => {
-  // Single constant for now — change here if a language selector is added later.
-  const LANGUAGE = "mr";
-
   const MAX_SIDE = 1280;
   const JPEG_QUALITY = 0.85;
 
@@ -203,7 +223,7 @@ const DiseaseCheck = (() => {
     const formData = new FormData();
     formData.append("image", compressed, "leaf.jpg");
     formData.append("crop", crop);
-    formData.append("language", LANGUAGE);
+    formData.append("language", LanguageSelector.getLanguage());
 
     const response = await fetch(`${apiUrl}/api/disease`, {
       method: "POST",
@@ -223,9 +243,7 @@ const DiseaseCheck = (() => {
     return data;
   }
 
-  function getLanguage() { return LANGUAGE; }
-
-  return { checkDisease, getLanguage };
+  return { checkDisease };
 })();
 
 
@@ -1214,6 +1232,7 @@ const App = (() => {
     const welcomeScreen = document.getElementById("welcome-screen");
 
     ChatUI.init(chatArea, welcomeScreen);
+    LanguageSelector.init();
     Settings.init();
     ChatHistory.init();
     CropPicker.init((crop) => {
@@ -1344,7 +1363,7 @@ const App = (() => {
           const aiResponseText = chatResult.response;
 
           // Reply is already Marathi, so TTS skips translation
-          const ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"), true);
+          const ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"));
           aiTypingEl.remove();
 
           ChatUI.addTTSResult(
@@ -1358,7 +1377,7 @@ const App = (() => {
           await historyReady;
           await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
             ai_response: aiResponseText,
-            reply_language: "mr",
+            reply_language: LanguageSelector.getLanguage(),
             marathi_text: ttsResult.marathi_text,
             word_timings: ttsResult.word_timings,
             audio_base64: ttsResult.audio_base64,
@@ -1409,10 +1428,7 @@ const App = (() => {
   // ── Speak only the result message (no percentages) ─────
   async function _speakDiseaseMessage(result) {
     try {
-      // disease_api's TTS only understands Marathi or English text; other
-      // languages aren't wired for speech yet (CLAUDE.md — no selector exists).
-      const isMarathi = result.language === "mr";
-      const ttsResult = await API.textToSpeech(result.message, Config.get("voice"), isMarathi);
+      const ttsResult = await API.textToSpeech(result.message, Config.get("voice"));
 
       ChatUI.addTTSResult(
         ttsResult.marathi_text,
@@ -1468,7 +1484,7 @@ const App = (() => {
       const aiResponseText = chatResult.response;
 
       // Reply is already Marathi, so TTS skips translation
-      const result = await API.textToSpeech(aiResponseText, Config.get("voice"), true);
+      const result = await API.textToSpeech(aiResponseText, Config.get("voice"));
       typingEl.remove();
 
       ChatUI.addTTSResult(
@@ -1482,7 +1498,7 @@ const App = (() => {
       await historyReady;
       await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
         ai_response: aiResponseText,
-        reply_language: "mr",
+        reply_language: LanguageSelector.getLanguage(),
         marathi_text: result.marathi_text,
         word_timings: result.word_timings,
         audio_base64: result.audio_base64,
