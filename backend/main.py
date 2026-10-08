@@ -57,6 +57,9 @@ LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "nvidia/nemotron-3-super-12
 LLM_HEDGE_AFTER = float(os.getenv("LLM_HEDGE_AFTER", "8"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "40"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
+# "direct": no translation, LLM answers mr/hi/en directly (default, demo-safe).
+# "split": translate to English, LLM answers English-only, translate back.
+CHAT_MODE = os.getenv("CHAT_MODE", "direct")
 
 # ─── Disease detection (forwards to Shubham's separate Flask service) ─────────
 
@@ -161,6 +164,9 @@ FARMER_SYSTEM_PROMPT = (
 )
 
 ORIGINAL_LANGUAGE_LABELS = {"mr": "Marathi", "hi": "Hindi"}
+
+# Used by CHAT_MODE=direct to fill FARMER_SYSTEM_PROMPT's {language}.
+LANGUAGE_NAMES = {"mr": "Marathi", "hi": "Hindi", "en": "English"}
 
 # ─── Farm glossary (fixed mr/hi terms, see CLAUDE.md on disease names) ────────
 
@@ -568,6 +574,83 @@ def _llm_extra_body(model: str) -> dict:
     return {}
 
 
+async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
+    """CHAT_MODE=direct: no translation — the LLM sees the farmer's original
+    text and is told to answer directly in mr/hi/en."""
+    language_name = LANGUAGE_NAMES.get(reply_language, "English")
+    system_prompt = FARMER_SYSTEM_PROMPT.format(language=language_name)
+    if reply_language in ("mr", "hi"):
+        system_prompt += (
+            " Write only in Devanagari script. Do not use English letters. "
+            "Use short, simple everyday words."
+        )
+
+    logger.info(
+        "LLM chat request (%s) CHAT_MODE=direct reply_language=%s question_en=%s",
+        LLM_MODEL, reply_language, text[:100],
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": text},
+    ]
+
+    def complete(model: str):
+        return asyncio.create_task(_get_llm_client().chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.5,
+            top_p=0.9,
+            max_tokens=LLM_MAX_TOKENS,
+            extra_body=_llm_extra_body(model),
+        ))
+
+    t_total_start = time.perf_counter()
+    try:
+        # Hedged request: if the primary model hasn't answered within
+        # LLM_HEDGE_AFTER seconds (free-tier queueing), also ask the fallback
+        # model and use whichever answers first.
+        completion, failed = None, []
+        pending = {complete(LLM_MODEL)}
+        timeout = LLM_HEDGE_AFTER
+        while completion is None:
+            if not pending:
+                raise failed[-1].exception()
+            done, pending = await asyncio.wait(
+                pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                if t.exception():
+                    failed.append(t)
+                elif completion is None:
+                    completion = t.result()
+            if completion is None and timeout is not None and LLM_FALLBACK_MODEL:
+                logger.warning("LLM %s slow or failed; also trying %s", LLM_MODEL, LLM_FALLBACK_MODEL)
+                pending.add(complete(LLM_FALLBACK_MODEL))
+            timeout = None  # hedge only once; then wait for whichever finishes
+        for t in pending:
+            t.cancel()
+
+        response_text = (completion.choices[0].message.content or "").strip()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error in chat")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+    llm_ms = round((time.perf_counter() - t_total_start) * 1000)
+    timings = {"translate_in": 0, "llm": llm_ms, "translate_out": 0, "total": llm_ms}
+    logger.info("Chat timings (ms): %s", timings)
+
+    return ChatResponse(
+        response=response_text,
+        response_en=response_text,
+        question_en=text,
+        timings=timings,
+        translation_failed=False,
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -583,6 +666,10 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="No text provided.")
 
     reply_language = request.reply_language or "en"
+
+    if CHAT_MODE == "direct":
+        return await _chat_direct(text, reply_language)
+
     needs_translation = reply_language != "en"
     translation_failed = False
     timings = {"translate_in": 0, "llm": 0, "translate_out": 0, "total": 0}
