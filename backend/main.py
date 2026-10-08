@@ -160,6 +160,8 @@ FARMER_SYSTEM_PROMPT = (
     "no bullet points or symbols like - or *, no headings, no emojis, no tables."
 )
 
+ORIGINAL_LANGUAGE_LABELS = {"mr": "Marathi", "hi": "Hindi"}
+
 # ─── Farm glossary (fixed mr/hi terms, see CLAUDE.md on disease names) ────────
 
 FARM_GLOSSARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "farm_glossary.json")
@@ -188,15 +190,30 @@ def _whole_word_present(word: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
-async def _translated_glossary_word(term: str, language: str) -> str:
-    """Translate one glossary term in isolation, once per (term, language)
-    for the lifetime of the server process."""
-    key = (term, language)
-    if key in _glossary_word_cache:
-        return _glossary_word_cache[key]
-    word = (await translate(term, "en", language)).strip().rstrip(".।")
-    _glossary_word_cache[key] = word
-    return word
+def _translated_glossary_word(term: str, language: str) -> Optional[str]:
+    """Read-only cache lookup. The cache is filled once at server startup by
+    _prefill_glossary_cache() — never during a request, so a slow or failing
+    translation call can't add latency or risk to /api/chat."""
+    return _glossary_word_cache.get((term, language))
+
+
+async def _prefill_glossary_cache():
+    """Fill _glossary_word_cache in the background after startup, one
+    glossary term every 0.5s via Google Translate only (google_only=True —
+    no MyMemory fallback here). A failed lookup is simply left out of the
+    cache; _apply_farm_glossary then skips that term instead of retrying
+    mid-request."""
+    glossary = _load_farm_glossary()
+    for language, terms in glossary.items():
+        for term in terms:
+            try:
+                word = (await translate(term, "en", language, google_only=True)).strip().rstrip(".।")
+                if word:
+                    _glossary_word_cache[(term, language)] = word
+                    logger.info("Glossary cache: %s/%s -> %s", term, language, word)
+            except Exception as e:
+                logger.warning("Glossary cache: %s/%s failed (%s); term will be skipped", term, language, e)
+            await asyncio.sleep(0.5)
 
 
 async def _apply_farm_glossary(translated_text: str, english_text: str, language: str) -> str:
@@ -220,9 +237,8 @@ async def _apply_farm_glossary(translated_text: str, english_text: str, language
             continue
         if not re.search(rf"\b{re.escape(term)}s?\b", english_lower):
             continue
-        try:
-            translator_word = await _translated_glossary_word(term, language)
-        except Exception:
+        translator_word = _translated_glossary_word(term, language)
+        if translator_word is None:
             continue
         if translator_word and translator_word != fixed_word:
             pattern = rf"(?<!{_DEVANAGARI_WORD_CHAR}){re.escape(translator_word)}(?!{_DEVANAGARI_WORD_CHAR})"
@@ -240,6 +256,7 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Inference mode: %s", os.getenv("INFERENCE_MODE", "api"))
     logger.info("TTS Voice: %s", os.getenv("TTS_VOICE", "Sunita"))
+    asyncio.create_task(_prefill_glossary_cache())
     yield
     logger.info("API shutting down.")
 
@@ -290,6 +307,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     response_en: str
+    question_en: str
     timings: dict
     translation_failed: bool = False
     success: bool = True
@@ -584,11 +602,24 @@ async def chat(request: ChatRequest):
             translation_failed = True
         timings["translate_in"] = round((time.perf_counter() - t0) * 1000)
 
-    logger.info("LLM chat request (%s): %s", LLM_MODEL, question_en[:100])
+    logger.info(
+        "LLM chat request (%s) reply_language=%s question_en=%s",
+        LLM_MODEL, reply_language, question_en[:100],
+    )
+
+    if needs_translation:
+        language_label = ORIGINAL_LANGUAGE_LABELS.get(reply_language, reply_language)
+        user_content = (
+            f"Farmer's original question ({language_label}): {text}\n"
+            f"Machine translation to English (may contain mistakes): {question_en}\n"
+            "Answer the farmer's real question in English."
+        )
+    else:
+        user_content = question_en
 
     messages = [
         {"role": "system", "content": FARMER_SYSTEM_PROMPT.format(language="English")},
-        {"role": "user", "content": question_en},
+        {"role": "user", "content": user_content},
     ]
 
     def complete(model: str):
@@ -657,6 +688,7 @@ async def chat(request: ChatRequest):
     return ChatResponse(
         response=final_response,
         response_en=response_en,
+        question_en=question_en,
         timings=timings,
         translation_failed=translation_failed,
     )

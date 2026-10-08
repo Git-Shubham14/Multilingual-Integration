@@ -314,6 +314,8 @@ const ChatHistory = (() => {
             msg.content.voice,
             msg.content.duration
           );
+        } else if (msg.msg_type === "bot_text") {
+          ChatUI.addBotText("Voice not available", msg.content.ai_response);
         }
       }
     } catch (err) {
@@ -1361,29 +1363,45 @@ const App = (() => {
         try {
           const chatResult = await chatPromise;
           const aiResponseText = chatResult.response;
-
-          const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
-          const ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
           aiTypingEl.remove();
 
-          ChatUI.addTTSResult(
-            ttsResult.marathi_text,
-            ttsResult.word_timings,
-            ttsResult.audio_base64,
-            ttsResult.voice || Config.get("voice"),
-            ttsResult.duration || 3,
-          );
+          const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
+          let ttsResult = null;
+          try {
+            ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
+          } catch (ttsErr) {
+            console.warn("TTS failed, showing text only:", ttsErr);
+          }
+
+          if (ttsResult) {
+            ChatUI.addTTSResult(
+              ttsResult.marathi_text,
+              ttsResult.word_timings,
+              ttsResult.audio_base64,
+              ttsResult.voice || Config.get("voice"),
+              ttsResult.duration || 3,
+            );
+          } else {
+            ChatUI.addBotText("Voice not available", aiResponseText);
+          }
 
           await historyReady;
-          await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
-            ai_response: aiResponseText,
-            reply_language: LanguageSelector.getLanguage(),
-            marathi_text: ttsResult.marathi_text,
-            word_timings: ttsResult.word_timings,
-            audio_base64: ttsResult.audio_base64,
-            voice: ttsResult.voice || Config.get("voice"),
-            duration: ttsResult.duration || 3
-          });
+          if (ttsResult) {
+            await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
+              ai_response: aiResponseText,
+              reply_language: LanguageSelector.getLanguage(),
+              marathi_text: ttsResult.marathi_text,
+              word_timings: ttsResult.word_timings,
+              audio_base64: ttsResult.audio_base64,
+              voice: ttsResult.voice || Config.get("voice"),
+              duration: ttsResult.duration || 3
+            });
+          } else {
+            await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_text", {
+              ai_response: aiResponseText,
+              reply_language: LanguageSelector.getLanguage(),
+            });
+          }
         } catch (err) {
           aiTypingEl.remove();
           ChatUI.addError("AI Error: " + err.message);
@@ -1482,29 +1500,45 @@ const App = (() => {
 
       const chatResult = await chatPromise;
       const aiResponseText = chatResult.response;
-
-      const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
-      const result = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
       typingEl.remove();
 
-      ChatUI.addTTSResult(
-        result.marathi_text,
-        result.word_timings,
-        result.audio_base64,
-        result.voice || Config.get("voice"),
-        result.duration || 3,
-      );
+      const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
+      let result = null;
+      try {
+        result = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
+      } catch (ttsErr) {
+        console.warn("TTS failed, showing text only:", ttsErr);
+      }
+
+      if (result) {
+        ChatUI.addTTSResult(
+          result.marathi_text,
+          result.word_timings,
+          result.audio_base64,
+          result.voice || Config.get("voice"),
+          result.duration || 3,
+        );
+      } else {
+        ChatUI.addBotText("Voice not available", aiResponseText);
+      }
 
       await historyReady;
-      await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
-        ai_response: aiResponseText,
-        reply_language: LanguageSelector.getLanguage(),
-        marathi_text: result.marathi_text,
-        word_timings: result.word_timings,
-        audio_base64: result.audio_base64,
-        voice: result.voice || Config.get("voice"),
-        duration: result.duration || 3
-      });
+      if (result) {
+        await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_tts", {
+          ai_response: aiResponseText,
+          reply_language: LanguageSelector.getLanguage(),
+          marathi_text: result.marathi_text,
+          word_timings: result.word_timings,
+          audio_base64: result.audio_base64,
+          voice: result.voice || Config.get("voice"),
+          duration: result.duration || 3
+        });
+      } else {
+        await API.saveMessage(ChatHistory.getChatId(), "bot", "bot_text", {
+          ai_response: aiResponseText,
+          reply_language: LanguageSelector.getLanguage(),
+        });
+      }
     } catch (err) {
       typingEl.remove();
       ChatUI.addError(err.message || "Request failed.");

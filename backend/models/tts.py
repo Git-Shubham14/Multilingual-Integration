@@ -8,6 +8,7 @@ Returns: base64-encoded WAV audio + word timing list for frontend highlighting
 import os
 import io
 import re
+import time
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -138,9 +139,18 @@ def _split_sentences(text: str, max_len: int = 180) -> list:
 
 def _gtts_chunk(text: str, lang: str = "mr") -> bytes:
     from gtts import gTTS
-    buf = io.BytesIO()
-    gTTS(text=text, lang=lang).write_to_fp(buf)
-    return buf.getvalue()
+    last_error = None
+    for attempt in range(3):
+        try:
+            buf = io.BytesIO()
+            gTTS(text=text, lang=lang).write_to_fp(buf)
+            return buf.getvalue()
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                logger.warning("gTTS chunk failed (attempt %d/3): %s; retrying in 0.5s", attempt + 1, e)
+                time.sleep(0.5)
+    raise last_error
 
 
 def _synthesize_api(marathi_text: str, lang: str = "mr") -> bytes:

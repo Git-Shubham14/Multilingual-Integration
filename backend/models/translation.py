@@ -7,6 +7,7 @@ Models:
   English→Marathi: ai4bharat/indictrans2-en-indic-dist-200M
 """
 
+import re
 import os
 import asyncio
 import logging
@@ -90,38 +91,64 @@ def _translate_local(text: str, direction: str) -> str:
 GOOGLE_LANG_CODES = {"mr": "mr", "hi": "hi", "en": "en"}
 MYMEMORY_LANG_CODES = {"mr": "mr-IN", "hi": "hi-IN", "en": "en-US"}
 
+# Sentence-ending punctuation, including the Devanagari danda/double danda.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.?!।॥])\s+")
 
-def _translate_api_generic(text: str, source: str, target: str) -> str:
+
+def _translate_mymemory_sentences(text: str, source: str, target: str) -> str:
+    """Translate sentence by sentence via MyMemory, each piece capped at 400
+    chars, instead of truncating the whole answer to ~450 chars. MyMemory's
+    free tier is unreliable on long single requests; this keeps every
+    sentence of a long answer instead of silently dropping the tail."""
+    from deep_translator import MyMemoryTranslator
+
+    mm_src = MYMEMORY_LANG_CODES.get(source, source)
+    mm_tgt = MYMEMORY_LANG_CODES.get(target, target)
+    translator = MyMemoryTranslator(source=mm_src, target=mm_tgt)
+
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()] or [text]
+    translated = [translator.translate(s[:400]) or s[:400] for s in sentences]
+    return " ".join(translated)
+
+
+def _translate_api_generic(text: str, source: str, target: str, google_only: bool = False) -> str:
     """Translate via Google Translate (one request, up to 5000 chars).
 
-    Falls back to MyMemory, which is slower and capped at ~5000 chars/day
-    on the anonymous free tier. source/target are 'mr', 'hi' or 'en'.
+    Falls back to MyMemory unless `google_only` is set, in which case a
+    Google failure raises instead of falling back. source/target are 'mr',
+    'hi' or 'en'.
     """
-    from deep_translator import GoogleTranslator, MyMemoryTranslator
+    from deep_translator import GoogleTranslator
 
     g_src = GOOGLE_LANG_CODES.get(source, source)
     g_tgt = GOOGLE_LANG_CODES.get(target, target)
     try:
-        return GoogleTranslator(source=g_src, target=g_tgt).translate(text[:4900]) or text
+        result = GoogleTranslator(source=g_src, target=g_tgt).translate(text[:4900]) or text
+        logger.info("Translation engine=google %s→%s: %.60s...", source, target, result)
+        return result
     except Exception as e:
+        if google_only:
+            logger.warning("Google translation failed (%s); google_only=True, not falling back", e)
+            raise RuntimeError(f"Google translation failed: {e}")
         logger.warning("Google translation failed (%s); falling back to MyMemory", e)
 
     try:
-        mm_src = MYMEMORY_LANG_CODES.get(source, source)
-        mm_tgt = MYMEMORY_LANG_CODES.get(target, target)
-        return MyMemoryTranslator(source=mm_src, target=mm_tgt).translate(text[:450]) or text
+        result = _translate_mymemory_sentences(text, source, target)
+        logger.info("Translation engine=mymemory %s→%s: %.60s...", source, target, result)
+        return result
     except Exception as e:
         logger.error("Translation API error: %s", e)
         raise RuntimeError(f"Translation API failed: {e}")
 
 
-async def translate(text: str, source: str, target: str) -> str:
+async def translate(text: str, source: str, target: str, google_only: bool = False) -> str:
     """Generic translation entry point. source/target: 'mr', 'hi' or 'en'.
 
     API mode: Google Translate first, MyMemory fallback — works for any pair.
     Local mode: only mr<->en is backed by a loaded IndicTrans2 model, so any
     pair involving 'hi' still falls through to API mode even when
     INFERENCE_MODE=local (there is no local Hindi model wired up).
+    google_only=True raises instead of using MyMemory when Google fails.
     """
     if not text or not text.strip():
         return ""
@@ -140,7 +167,7 @@ async def translate(text: str, source: str, target: str) -> str:
         direction = "mr2en" if source == "mr" else "en2mr"
         return await asyncio.to_thread(_translate_local, cleaned_text, direction)
 
-    return await asyncio.to_thread(_translate_api_generic, cleaned_text, source, target)
+    return await asyncio.to_thread(_translate_api_generic, cleaned_text, source, target, google_only)
 
 
 async def translate_marathi_to_english(marathi_text: str) -> str:
