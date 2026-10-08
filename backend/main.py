@@ -256,7 +256,6 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Inference mode: %s", os.getenv("INFERENCE_MODE", "api"))
     logger.info("TTS Voice: %s", os.getenv("TTS_VOICE", "Sunita"))
-    asyncio.create_task(_prefill_glossary_cache())
     yield
     logger.info("API shutting down.")
 
