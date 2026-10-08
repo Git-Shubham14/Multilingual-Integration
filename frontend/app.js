@@ -1055,6 +1055,27 @@ const ChatUI = (() => {
       bubble.appendChild(guesses);
     }
 
+    if (Array.isArray(result.precautions) && result.precautions.length > 0) {
+      const precautionsEl = document.createElement("div");
+      precautionsEl.className = "disease-precautions";
+
+      const title = document.createElement("div");
+      title.className = "disease-precautions-title";
+      title.textContent = result.precautions_title || "Precautions";
+      precautionsEl.appendChild(title);
+
+      const list = document.createElement("ul");
+      list.className = "disease-precautions-list";
+      result.precautions.forEach((line) => {
+        const li = document.createElement("li");
+        li.textContent = line;
+        list.appendChild(li);
+      });
+      precautionsEl.appendChild(list);
+
+      bubble.appendChild(precautionsEl);
+    }
+
     body.appendChild(bubble);
     msg.appendChild(_createAvatar("bot"));
     msg.appendChild(body);

@@ -106,6 +106,27 @@ def _disease_plural(class_name: str, language: str) -> bool:
     return bool(lang_entry and lang_entry.get("plural", False))
 
 
+def _disease_category(class_name: str) -> str:
+    """fungal / bacterial / viral / healthy, from disease_names.json."""
+    return _load_disease_names()["categories"].get(class_name, "healthy")
+
+
+def _category_precautions(category: str, language: str) -> list:
+    """General precaution lines for a disease category, in language (mr/hi unreviewed)."""
+    entry = _load_disease_names()["precautions_by_category"].get(category)
+    if not entry:
+        return []
+    if language == "en":
+        return entry.get("en", [])
+    lang_entry = entry.get(language)
+    return lang_entry.get("lines", []) if lang_entry else entry.get("en", [])
+
+
+def _precautions_title(language: str) -> str:
+    titles = _load_disease_names().get("precautions_title", {})
+    return titles.get(language) or titles.get("en", "Precautions")
+
+
 def _build_disease_message(result: dict, language: str) -> str:
     """
     Build the farmer-facing message from disease_api's structured fields
@@ -343,6 +364,7 @@ class DiseaseResponse(BaseModel):
     language: str
     note: str = ""
     precautions: list = []
+    precautions_title: str = ""
     top: list[DiseaseTopGuess] = []
 
 
@@ -541,6 +563,12 @@ async def disease_check(
     # English text — keyed on presence only (see _build_disease_message's docstring).
     note = all_templates[lang]["kvk_note"] if result.get("note") else ""
 
+    precautions = []
+    if result["status"] == "ok":
+        category = _disease_category(result["top"][0]["class"])
+        if category != "healthy":
+            precautions = _category_precautions(category, lang)
+
     return DiseaseResponse(
         crop=result["crop"],
         status=result["status"],
@@ -548,7 +576,8 @@ async def disease_check(
         is_healthy=result["top"][0]["is_healthy"],
         language=lang,
         note=note,
-        precautions=result.get("precautions", []),
+        precautions=precautions,
+        precautions_title=_precautions_title(lang),
         top=top_guesses,
     )
 

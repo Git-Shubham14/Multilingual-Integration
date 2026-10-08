@@ -144,6 +144,107 @@
       "hi": {"name": "यलो लीफ कर्ल वायरस", "reviewed": false, "source_note": "Transliteration of the English name — not confirmed as an established Hindi term; please verify with KVK."}
     }
   },
+  "categories": {
+    "Cotton___Bacterial_Blight": "bacterial",
+    "Cotton___Curl_Virus": "viral",
+    "Cotton___Healthy": "healthy",
+    "Grape___Bacterial_Leaf_Spot": "bacterial",
+    "Grape___Downy_Mildew": "fungal",
+    "Grape___Healthy": "healthy",
+    "Grape___Powdery_Mildew": "fungal",
+    "Maize___Blight": "fungal",
+    "Maize___Common_Rust": "fungal",
+    "Maize___Gray_Leaf_Spot": "fungal",
+    "Maize___Healthy": "healthy",
+    "Onion___Alternaria": "fungal",
+    "Onion___Fusarium": "fungal",
+    "Onion___Healthy": "healthy",
+    "Onion___Iris_Yellow_Virus": "viral",
+    "Onion___Purple_Blotch": "fungal",
+    "Onion___Stemphylium_Leaf_Blight": "fungal",
+    "Onion___Virosis": "viral",
+    "Tomato___Bacterial_Spot": "bacterial",
+    "Tomato___Early_Blight": "fungal",
+    "Tomato___Healthy": "healthy",
+    "Tomato___Late_Blight": "fungal",
+    "Tomato___Leaf_Mold": "fungal",
+    "Tomato___Mosaic_Virus": "viral",
+    "Tomato___Septoria_Leaf_Spot": "fungal",
+    "Tomato___Target_Spot": "fungal",
+    "Tomato___Yellow_Leaf_Curl_Virus": "viral"
+  },
+  "precautions_by_category": {
+    "fungal": {
+      "en": [
+        "Remove and destroy infected leaves; do not leave them in the field.",
+        "Water at the base of the plant, not on the leaves, and keep plants well spaced.",
+        "For medicine, follow the product label and ask your local KVK for the right product and dose."
+      ],
+      "mr": {
+        "lines": [
+          "रोगट पाने काढून नष्ट करा; ती शेतात टाकू नका.",
+          "पाणी झाडाच्या बुडाशी द्या, पानांवर नको; झाडांमध्ये योग्य अंतर ठेवा.",
+          "औषधासाठी लेबलवरील सूचना पाळा आणि योग्य औषध व प्रमाणासाठी जवळच्या कृषी विज्ञान केंद्राचा सल्ला घ्या."
+        ],
+        "reviewed": false
+      },
+      "hi": {
+        "lines": [
+          "रोगग्रस्त पत्तों को तोड़कर नष्ट करें; उन्हें खेत में न छोड़ें।",
+          "पानी पौधे की जड़ में दें, पत्तों पर नहीं; पौधों के बीच सही दूरी रखें।",
+          "दवा के लिए लेबल के निर्देश मानें और सही दवा व मात्रा के लिए अपने नज़दीकी कृषि विज्ञान केंद्र से सलाह लें।"
+        ],
+        "reviewed": false
+      }
+    },
+    "bacterial": {
+      "en": [
+        "Remove and destroy infected leaves and do not touch wet plants.",
+        "Do not water over the leaves; keep the field well drained.",
+        "Clean tools after use and ask your local KVK for the right product and dose."
+      ],
+      "mr": {
+        "lines": [
+          "रोगट पाने काढून नष्ट करा आणि ओल्या झाडांना हात लावू नका.",
+          "पानांवर पाणी देऊ नका; शेतात पाण्याचा निचरा चांगला ठेवा.",
+          "अवजारे वापरानंतर स्वच्छ करा आणि योग्य औषधासाठी कृषी विज्ञान केंद्राचा सल्ला घ्या."
+        ],
+        "reviewed": false
+      },
+      "hi": {
+        "lines": [
+          "रोगग्रस्त पत्तों को तोड़कर नष्ट करें और गीले पौधों को न छुएँ।",
+          "पत्तों पर पानी न डालें; खेत में पानी की निकासी अच्छी रखें।",
+          "औज़ार इस्तेमाल के बाद साफ़ करें और सही दवा के लिए कृषि विज्ञान केंद्र से सलाह लें।"
+        ],
+        "reviewed": false
+      }
+    },
+    "viral": {
+      "en": [
+        "Remove and destroy infected plants so the virus does not spread.",
+        "Watch for sucking insects like whitefly and thrips, which spread viruses.",
+        "Use healthy seedlings and ask your local KVK for the right control steps."
+      ],
+      "mr": {
+        "lines": [
+          "रोगट झाडे उपटून नष्ट करा, म्हणजे रोग पसरणार नाही.",
+          "पांढरी माशी, फुलकिडे यांसारख्या रस शोषणाऱ्या किडींवर लक्ष ठेवा; त्या विषाणू पसरवतात.",
+          "निरोगी रोपे वापरा आणि योग्य उपायांसाठी कृषी विज्ञान केंद्राचा सल्ला घ्या."
+        ],
+        "reviewed": false
+      },
+      "hi": {
+        "lines": [
+          "रोगग्रस्त पौधों को उखाड़कर नष्ट करें ताकि रोग न फैले।",
+          "सफ़ेद मक्खी और थ्रिप्स जैसे रस चूसने वाले कीटों पर नज़र रखें; ये वायरस फैलाते हैं।",
+          "स्वस्थ पौध लगाएँ और सही उपाय के लिए कृषि विज्ञान केंद्र से सलाह लें।"
+        ],
+        "reviewed": false
+      }
+    }
+  },
+  "precautions_title": {"en": "Precautions", "mr": "खबरदारी", "hi": "सावधानियाँ"},
   "templates": {
     "en": {
       "healthy_word": "healthy",

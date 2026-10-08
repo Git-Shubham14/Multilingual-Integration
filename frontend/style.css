@@ -1023,6 +1023,27 @@ body {
   font-weight: 600;
 }
 
+.disease-precautions {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.disease-precautions-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.disease-precautions-list {
+  margin: 0;
+  padding-left: 1.1em;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
 /* ── Error Bubble ───────────────────────────────────────────── */
 .bubble.error {
   background: rgba(239, 68, 68, 0.08);
