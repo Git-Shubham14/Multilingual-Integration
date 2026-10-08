@@ -87,61 +87,67 @@ def _translate_local(text: str, direction: str) -> str:
     return postprocessed[0].strip()
 
 
-def _translate_api(text: str, model_id: str, src_lang: str, tgt_lang: str) -> str:
+GOOGLE_LANG_CODES = {"mr": "mr", "hi": "hi", "en": "en"}
+MYMEMORY_LANG_CODES = {"mr": "mr-IN", "hi": "hi-IN", "en": "en-US"}
+
+
+def _translate_api_generic(text: str, source: str, target: str) -> str:
     """Translate via Google Translate (one request, up to 5000 chars).
 
     Falls back to MyMemory, which is slower and capped at ~5000 chars/day
-    on the anonymous free tier.
+    on the anonymous free tier. source/target are 'mr', 'hi' or 'en'.
     """
     from deep_translator import GoogleTranslator, MyMemoryTranslator
 
-    g_src = 'mr' if src_lang == LANG_MR else 'en'
-    g_tgt = 'mr' if tgt_lang == LANG_MR else 'en'
+    g_src = GOOGLE_LANG_CODES.get(source, source)
+    g_tgt = GOOGLE_LANG_CODES.get(target, target)
     try:
         return GoogleTranslator(source=g_src, target=g_tgt).translate(text[:4900]) or text
     except Exception as e:
         logger.warning("Google translation failed (%s); falling back to MyMemory", e)
 
     try:
-        mm_src = 'mr-IN' if g_src == 'mr' else 'en-US'
-        mm_tgt = 'mr-IN' if g_tgt == 'mr' else 'en-US'
+        mm_src = MYMEMORY_LANG_CODES.get(source, source)
+        mm_tgt = MYMEMORY_LANG_CODES.get(target, target)
         return MyMemoryTranslator(source=mm_src, target=mm_tgt).translate(text[:450]) or text
     except Exception as e:
         logger.error("Translation API error: %s", e)
         raise RuntimeError(f"Translation API failed: {e}")
 
 
+async def translate(text: str, source: str, target: str) -> str:
+    """Generic translation entry point. source/target: 'mr', 'hi' or 'en'.
+
+    API mode: Google Translate first, MyMemory fallback — works for any pair.
+    Local mode: only mr<->en is backed by a loaded IndicTrans2 model, so any
+    pair involving 'hi' still falls through to API mode even when
+    INFERENCE_MODE=local (there is no local Hindi model wired up).
+    """
+    if not text or not text.strip():
+        return ""
+    if source == target:
+        return text.strip()
+
+    # The English side is usually LLM output, which can contain markdown or
+    # emojis that would confuse the translator — clean it before sending.
+    cleaned_text = clean_for_translation(text) if source == "en" else text.strip()
+    if not cleaned_text.strip():
+        cleaned_text = text.strip()
+
+    logger.info("Translating %s→%s: %.60s...", source, target, cleaned_text)
+
+    if INFERENCE_MODE == "local" and {source, target} == {"mr", "en"}:
+        direction = "mr2en" if source == "mr" else "en2mr"
+        return await asyncio.to_thread(_translate_local, cleaned_text, direction)
+
+    return await asyncio.to_thread(_translate_api_generic, cleaned_text, source, target)
+
+
 async def translate_marathi_to_english(marathi_text: str) -> str:
     """Translate Marathi text → English text."""
-    if not marathi_text.strip():
-        return ""
-    logger.info("Translating MR→EN: %.60s...", marathi_text)
-    if INFERENCE_MODE == "local":
-        return await asyncio.to_thread(_translate_local, marathi_text, "mr2en")
-    else:
-        return await asyncio.to_thread(_translate_api, marathi_text, MODEL_MR_TO_EN, LANG_MR, LANG_EN)
+    return await translate(marathi_text, "mr", "en")
 
 
 async def translate_english_to_marathi(english_text: str) -> str:
-    """Translate English text → Marathi text.
-
-    The text is cleaned (markdown stripped, emojis removed, whitespace
-    normalised) before being sent to the translation API so that formatting
-    noise does not confuse the translation model.
-    """
-    if not english_text or not english_text.strip():
-        return ""
-
-    # ── Clean LLM output before it reaches the translation API ───────────
-    cleaned_text = clean_for_translation(english_text)
-    logger.info("Cleaned EN text (%.60s...) → sending to translation", cleaned_text)
-
-    if not cleaned_text.strip():
-        logger.warning("clean_for_translation() returned empty string; falling back to original.")
-        cleaned_text = english_text.strip()
-
-    logger.info("Translating EN→MR: %.60s...", cleaned_text)
-    if INFERENCE_MODE == "local":
-        return await asyncio.to_thread(_translate_local, cleaned_text, "en2mr")
-    else:
-        return await asyncio.to_thread(_translate_api, cleaned_text, MODEL_EN_TO_MR, LANG_EN, LANG_MR)
+    """Translate English text → Marathi text."""
+    return await translate(english_text, "en", "mr")

@@ -99,12 +99,12 @@ const API = (() => {
     return response.json();
   }
 
-  async function textToSpeech(text, voice) {
+  async function textToSpeech(text, voice, language = LanguageSelector.getLanguage()) {
     const apiUrl = Config.get("apiUrl");
     const response = await fetch(`${apiUrl}/api/text-to-speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, language: LanguageSelector.getLanguage(), voice: voice }),
+      body: JSON.stringify({ text: text, language: language, voice: voice }),
     });
 
     if (!response.ok) {
@@ -1362,8 +1362,8 @@ const App = (() => {
           const chatResult = await chatPromise;
           const aiResponseText = chatResult.response;
 
-          // Reply is already Marathi, so TTS skips translation
-          const ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"));
+          const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
+          const ttsResult = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
           aiTypingEl.remove();
 
           ChatUI.addTTSResult(
@@ -1483,8 +1483,8 @@ const App = (() => {
       const chatResult = await chatPromise;
       const aiResponseText = chatResult.response;
 
-      // Reply is already Marathi, so TTS skips translation
-      const result = await API.textToSpeech(aiResponseText, Config.get("voice"));
+      const ttsLanguage = chatResult.translation_failed ? "en" : LanguageSelector.getLanguage();
+      const result = await API.textToSpeech(aiResponseText, Config.get("voice"), ttsLanguage);
       typingEl.remove();
 
       ChatUI.addTTSResult(

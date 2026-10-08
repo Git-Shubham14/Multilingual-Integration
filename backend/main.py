@@ -13,6 +13,8 @@ import os
 import json
 import asyncio
 import logging
+import re
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -41,7 +43,7 @@ sys.modules['sklearn.utils.sparsefuncs_fast'] = MagicMock()
 
 # Import model modules
 from models.asr import transcribe_marathi
-from models.translation import translate_marathi_to_english, translate_english_to_marathi
+from models.translation import translate, translate_marathi_to_english, translate_english_to_marathi
 from models.tts import synthesize_marathi_speech
 from models.db import init_db, create_chat, get_chats, get_chat_messages, add_message, delete_chat
 from utils.text_cleaner import clean_for_translation
@@ -55,11 +57,6 @@ LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "nvidia/nemotron-3-super-12
 LLM_HEDGE_AFTER = float(os.getenv("LLM_HEDGE_AFTER", "8"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "40"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
-
-LANGUAGE_NAMES = {
-    "mr": "Marathi", "hi": "Hindi", "en": "English", "gu": "Gujarati",
-    "kn": "Kannada", "te": "Telugu", "ta": "Tamil", "bn": "Bengali", "pa": "Punjabi",
-}
 
 # ─── Disease detection (forwards to Shubham's separate Flask service) ─────────
 
@@ -150,13 +147,87 @@ def _build_disease_message(result: dict, language: str) -> str:
 FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
     "Always reply in {language} using simple, everyday words a farmer understands. "
-    "Keep answers short: 3 to 6 sentences, practical and actionable "
-    "(what to do, how much, when). Mention locally available remedies and "
-    "safe pesticide use where relevant, and suggest contacting the local "
-    "Krishi Vigyan Kendra for serious problems. Your reply will be read aloud "
+    "Keep answers short: at most 4 sentences, plain words, practical and "
+    "actionable. Never name a specific pesticide, fungicide, or fertilizer "
+    "brand, and never give a dose, quantity, or mixing ratio — these vary by "
+    "product and a wrong amount can harm the crop or the farmer. Instead "
+    "tell the farmer to follow the instructions on the product label and to "
+    "contact the local Krishi Vigyan Kendra (KVK) or agriculture extension "
+    "officer for the right product and dose. Where useful, mention "
+    "non-chemical steps first: removing and destroying infected leaves, "
+    "proper plant spacing, and good drainage. Your reply will be read aloud "
     "by a text-to-speech engine, so write plain sentences only: no markdown, "
-    "no bullet points, no headings, no emojis, no tables."
+    "no bullet points or symbols like - or *, no headings, no emojis, no tables."
 )
+
+# ─── Farm glossary (fixed mr/hi terms, see CLAUDE.md on disease names) ────────
+
+FARM_GLOSSARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "farm_glossary.json")
+_farm_glossary: Optional[dict] = None
+_glossary_word_cache: dict[tuple[str, str], str] = {}
+
+# Standard \w doesn't count Devanagari vowel signs/matras as word characters,
+# so a plain \bword\b would wrongly match inside a longer word (e.g. "पान"
+# inside "पानांची"). This class treats the whole Devanagari block as "word".
+_DEVANAGARI_WORD_CHAR = r"[\wऀ-ॿ]"
+
+
+def _load_farm_glossary() -> dict:
+    """Load backend/data/farm_glossary.json once and cache it in memory."""
+    global _farm_glossary
+    if _farm_glossary is None:
+        with open(FARM_GLOSSARY_PATH, encoding="utf-8") as f:
+            _farm_glossary = json.load(f)
+    return _farm_glossary
+
+
+def _whole_word_present(word: str, text: str) -> bool:
+    """True if `word` is in `text` as a separate word, not as a substring of
+    a longer word."""
+    pattern = rf"(?<!{_DEVANAGARI_WORD_CHAR}){re.escape(word)}(?!{_DEVANAGARI_WORD_CHAR})"
+    return re.search(pattern, text) is not None
+
+
+async def _translated_glossary_word(term: str, language: str) -> str:
+    """Translate one glossary term in isolation, once per (term, language)
+    for the lifetime of the server process."""
+    key = (term, language)
+    if key in _glossary_word_cache:
+        return _glossary_word_cache[key]
+    word = (await translate(term, "en", language)).strip().rstrip(".।")
+    _glossary_word_cache[key] = word
+    return word
+
+
+async def _apply_farm_glossary(translated_text: str, english_text: str, language: str) -> str:
+    """
+    Swap the general-purpose translator's wording for our fixed farm terms.
+
+    For every English glossary term that appears in the LLM's English answer,
+    translate that single word into `language` and see what word the
+    translator chose. If it differs from our fixed glossary word, replace it
+    in the translated text (whole-word only, so it can't corrupt a longer
+    word that happens to contain the same letters).
+    """
+    terms = _load_farm_glossary().get(language)
+    if not terms:
+        return translated_text
+
+    result = translated_text
+    english_lower = english_text.lower()
+    for term, fixed_word in terms.items():
+        if not fixed_word or _whole_word_present(fixed_word, result):
+            continue
+        if not re.search(rf"\b{re.escape(term)}s?\b", english_lower):
+            continue
+        try:
+            translator_word = await _translated_glossary_word(term, language)
+        except Exception:
+            continue
+        if translator_word and translator_word != fixed_word:
+            pattern = rf"(?<!{_DEVANAGARI_WORD_CHAR}){re.escape(translator_word)}(?!{_DEVANAGARI_WORD_CHAR})"
+            result = re.sub(pattern, fixed_word, result)
+    return result
 
 _llm_client: Optional[AsyncOpenAI] = None
 
@@ -218,6 +289,9 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    response_en: str
+    timings: dict
+    translation_failed: bool = False
     success: bool = True
 
 
@@ -482,19 +556,39 @@ async def chat(request: ChatRequest):
     """
     Send the farmer's question to the NVIDIA-hosted LLM.
 
-    The LLM answers directly in `reply_language`, which removes the two slow
-    translation hops (MR→EN before the LLM, EN→MR after it).
+    The LLM always answers in English — it must never write Marathi or Hindi
+    itself, since that isn't checked the way disease names are. For mr/hi,
+    the question is translated to English first and the English answer is
+    translated back afterwards; for en, both hops are skipped.
     """
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="No text provided.")
 
-    language_name = LANGUAGE_NAMES.get(request.reply_language, "English")
-    logger.info("LLM chat request (%s, reply in %s): %s", LLM_MODEL, language_name, text[:100])
+    reply_language = request.reply_language or "en"
+    needs_translation = reply_language != "en"
+    translation_failed = False
+    timings = {"translate_in": 0, "llm": 0, "translate_out": 0, "total": 0}
+    t_total_start = time.perf_counter()
+
+    # Step 1: translate the farmer's question to English (mr/hi only)
+    question_en = text
+    if needs_translation:
+        t0 = time.perf_counter()
+        try:
+            translated_question = await translate(text, reply_language, "en")
+            if translated_question.strip():
+                question_en = translated_question
+        except Exception as e:
+            logger.warning("Question translation (%s→en) failed: %s", reply_language, e)
+            translation_failed = True
+        timings["translate_in"] = round((time.perf_counter() - t0) * 1000)
+
+    logger.info("LLM chat request (%s): %s", LLM_MODEL, question_en[:100])
 
     messages = [
-        {"role": "system", "content": FARMER_SYSTEM_PROMPT.format(language=language_name)},
-        {"role": "user", "content": text},
+        {"role": "system", "content": FARMER_SYSTEM_PROMPT.format(language="English")},
+        {"role": "user", "content": question_en},
     ]
 
     def complete(model: str):
@@ -507,6 +601,7 @@ async def chat(request: ChatRequest):
             extra_body=_llm_extra_body(model),
         ))
 
+    t0 = time.perf_counter()
     try:
         # Hedged request: if the primary model hasn't answered within
         # LLM_HEDGE_AFTER seconds (free-tier queueing), also ask the fallback
@@ -532,15 +627,39 @@ async def chat(request: ChatRequest):
         for t in pending:
             t.cancel()
 
-        response_text = (completion.choices[0].message.content or "").strip()
-        logger.info("LLM response: %s", response_text[:100])
-        return ChatResponse(response=response_text)
-
+        response_en = (completion.choices[0].message.content or "").strip()
+        timings["llm"] = round((time.perf_counter() - t0) * 1000)
+        logger.info("LLM response (English): %s", response_en[:100])
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Unexpected error in chat")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+    # Step 3: translate the English answer to reply_language (mr/hi only)
+    final_response = response_en
+    if needs_translation:
+        t0 = time.perf_counter()
+        try:
+            translated_answer = await translate(response_en, "en", reply_language)
+            if translated_answer.strip():
+                final_response = await _apply_farm_glossary(translated_answer, response_en, reply_language)
+            else:
+                translation_failed = True
+        except Exception as e:
+            logger.warning("Answer translation (en→%s) failed: %s", reply_language, e)
+            translation_failed = True
+        timings["translate_out"] = round((time.perf_counter() - t0) * 1000)
+
+    timings["total"] = round((time.perf_counter() - t_total_start) * 1000)
+    logger.info("Chat timings (ms): %s", timings)
+
+    return ChatResponse(
+        response=final_response,
+        response_en=response_en,
+        timings=timings,
+        translation_failed=translation_failed,
+    )
 
 
 @app.post("/api/chats")
