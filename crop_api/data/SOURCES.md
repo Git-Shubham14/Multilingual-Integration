@@ -51,10 +51,29 @@ sowing windows.
 
 ### ICAR dry spell definition
 
-- Source: ICAR 2011 sec 2.1.1 -- a kharif sowing window is considered a
-  "dry spell" when there has been less than 2.5 mm of rain over the
-  preceding 2 weeks.
+- ICAR sec 2.1.1 defines a mid-season dry spell as 2 consecutive weeks
+  with less than 2.5 mm rain. Using it as a warning at sowing time is our
+  design choice.
 - `rules.py` uses this only as a soft warning (`dry_spell` reason, -10
   score) for a kharif crop in its own sowing month; it never removes a
   crop from the results, and it is skipped entirely when weather data is
   unavailable.
+
+## RAG (Phase 4a)
+
+- `scripts/build_chunks.py` extracts the crop-relevant pages of the ICAR
+  PDF (district profile + sowing/irrigation/soil contingency tables,
+  pages 1-13) into `data/chunks.json`. It stops before the pest and
+  disease spray tables (roughly pages 14-17) and also runs a keyword
+  safety filter that drops any chunk mentioning a dose unit (`ml/L`,
+  `g/L`, `kg/ha`) or a pesticide name/word (Spraying, Endosulfan,
+  Monocrotophos, Phorate, Chloropyriphos, Dimethoate, Mancozeb,
+  Quinolphos, parathion) -- a crop recommendation must never surface a
+  pesticide name or dose to a farmer unreviewed.
+- `retrieval.py` does plain BM25 keyword retrieval (the `rank_bm25`
+  package) over those chunks -- no vector database, no embeddings. The
+  query is each recommended crop's `search_terms` (from
+  `crop_rules.json`) plus a couple of extra words (season, soil
+  description); only chunks that actually contain one of the crop's
+  search_terms are returned, so BM25 only affects ranking, not whether a
+  chunk can appear at all.

@@ -1,12 +1,18 @@
-# Crop recommendation API (Module 2, Phase 3 - rule engine + Open-Meteo weather).
+# Crop recommendation API (Module 2, Phase 4a - rule engine + weather + BM25 evidence).
 # Run:  python app.py
 import json
 import os
 
 from flask import Flask, jsonify, request
 
+from retrieval import retrieve
 from rules import load_rules, recommend
 from weather import get_weather
+
+EVIDENCE_CHAR_BUDGET = 2000
+# How the ICAR plan describes each soil_type (sec 1.12 / 2.1.x), used as
+# extra BM25 query terms -- never shown to the farmer, only used to rank.
+SOIL_TYPE_WORDS = {"light": "shallow red", "medium": "medium red black", "heavy": "deep black"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -24,6 +30,7 @@ with open(SOIL_TYPES_FILE, encoding="utf-8") as f:
     soil_types = json.load(f)["soil_types"]
 taluka_by_name = {t["en"].lower(): t for t in talukas}
 soil_type_ids = {s["id"] for s in soil_types}
+crop_by_id = {c["id"]: c for c in crop_rules}
 # used by /health as a cheap, known-good point to test the weather API with
 HEALTH_CHECK_TALUKA = next((t for t in talukas if t.get("latitude") is not None), None)
 print(f"Crop rules ready. {len(crop_rules)} crops, {sum(c['verified'] for c in crop_rules)} verified.")
@@ -61,6 +68,18 @@ def get_talukas():
 @app.get("/soil-types")
 def get_soil_types():
     return jsonify({"soil_types": soil_types})
+
+
+@app.get("/evidence")
+def evidence_route():
+    crop_id = request.args.get("crop") or ""
+    if crop_id not in crop_by_id:
+        return error(f"Unknown crop '{crop_id}'.")
+    chunks = retrieve([crop_id], k=3)
+    return jsonify({
+        "crop": crop_id,
+        "evidence": [{"page": c["page"], "section": c["section"], "text": c["text"]} for c in chunks],
+    })
 
 
 @app.get("/weather")
@@ -120,6 +139,23 @@ def recommend_crop():
         weather=weather,
         rules=crop_rules,
     )
+
+    evidence_budget = EVIDENCE_CHAR_BUDGET
+    for rec in recommendations:
+        crop = crop_by_id.get(rec["id"])
+        extra_terms = []
+        if crop and crop.get("season"):
+            extra_terms.append(crop["season"])
+        if soil_type:
+            extra_terms.append(SOIL_TYPE_WORDS.get(soil_type, soil_type))
+
+        rec["evidence"] = []
+        for chunk in retrieve([rec["id"]], extra_terms=extra_terms, k=2):
+            if evidence_budget <= 0:
+                break
+            text = chunk["text"][:evidence_budget]
+            rec["evidence"].append({"page": chunk["page"], "section": chunk["section"], "text": text})
+            evidence_budget -= len(text)
 
     reply = {"success": True, "recommendations": recommendations, "source": "rules", "weather": weather}
     if weather is None:
