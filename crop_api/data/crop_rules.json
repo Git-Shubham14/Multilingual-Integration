@@ -1,0 +1,173 @@
+{
+  "_comment": "Crop recommendation rules for Nashik district (Module 2, Phase 1). Only id and names are filled in. Every agronomic field (talukas, sowing_months, irrigation, ph_min, ph_max, avoid_after) is left null on purpose -- Shubham will fill real values later from the ICAR Nashik District Agricultural Contingency Plan, Soil Health Card data, and MPKV Agromet bulletins. Do not invent values here; rules.py already treats null as 'skip this check'. mr/hi crop names are a plain translation/transliteration, not checked by a native speaker or KVK yet, so reviewed stays false.",
+  "crops": [
+    {
+      "id": "bajra",
+      "names": {"en": "Pearl millet", "mr": "बाजरी", "hi": "बाजरा", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "wheat",
+      "names": {"en": "Wheat", "mr": "गहू", "hi": "गेहूं", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "maize",
+      "names": {"en": "Maize", "mr": "मका", "hi": "मक्का", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "onion",
+      "names": {"en": "Onion", "mr": "कांदा", "hi": "प्याज", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "chickpea",
+      "names": {"en": "Chickpea", "mr": "हरभरा", "hi": "चना", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "cabbage",
+      "names": {"en": "Cabbage/Cauliflower", "mr": "कोबी/फ्लॉवर", "hi": "पत्ता गोभी/फूलगोभी", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "paddy",
+      "names": {"en": "Paddy", "mr": "भात", "hi": "धान", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "groundnut",
+      "names": {"en": "Groundnut", "mr": "भुईमूग", "hi": "मूंगफली", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "nagli",
+      "names": {"en": "Finger millet", "mr": "नाचणी", "hi": "रागी", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "soybean",
+      "names": {"en": "Soybean", "mr": "सोयाबीन", "hi": "सोयाबीन", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "sugarcane",
+      "names": {"en": "Sugarcane", "mr": "ऊस", "hi": "गन्ना", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "grape",
+      "names": {"en": "Grape", "mr": "द्राक्ष", "hi": "अंगूर", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "pomegranate",
+      "names": {"en": "Pomegranate", "mr": "डाळिंब", "hi": "अनार", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    },
+    {
+      "id": "tomato",
+      "names": {"en": "Tomato", "mr": "टोमॅटो", "hi": "टमाटर", "reviewed": false},
+      "talukas": null,
+      "sowing_months": null,
+      "irrigation": null,
+      "ph_min": null,
+      "ph_max": null,
+      "avoid_after": null,
+      "source": "TODO",
+      "verified": false
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "_comment": "The 15 talukas (sub-districts) of Nashik district. mr/hi names are a plain transliteration of the standard spelling, not checked by a native speaker yet, so reviewed stays false until someone confirms them.",
+  "talukas": [
+    {"en": "Nashik", "mr": "नाशिक", "hi": "नासिक", "reviewed": false},
+    {"en": "Igatpuri", "mr": "इगतपुरी", "hi": "इगतपुरी", "reviewed": false},
+    {"en": "Trimbakeshwar", "mr": "त्र्यंबकेश्वर", "hi": "त्रिंबकेश्वर", "reviewed": false},
+    {"en": "Peth", "mr": "पेठ", "hi": "पेठ", "reviewed": false},
+    {"en": "Surgana", "mr": "सुरगाणा", "hi": "सुरगाना", "reviewed": false},
+    {"en": "Kalwan", "mr": "कळवण", "hi": "कलवण", "reviewed": false},
+    {"en": "Deola", "mr": "देवळा", "hi": "देवला", "reviewed": false},
+    {"en": "Baglan", "mr": "बागलाण", "hi": "बागलान", "reviewed": false},
+    {"en": "Malegaon", "mr": "मालेगाव", "hi": "मालेगांव", "reviewed": false},
+    {"en": "Nandgaon", "mr": "नांदगाव", "hi": "नांदगांव", "reviewed": false},
+    {"en": "Chandwad", "mr": "चांदवड", "hi": "चांदवड", "reviewed": false},
+    {"en": "Yeola", "mr": "येवला", "hi": "येवला", "reviewed": false},
+    {"en": "Niphad", "mr": "निफाड", "hi": "निफाड", "reviewed": false},
+    {"en": "Sinnar", "mr": "सिन्नर", "hi": "सिन्नर", "reviewed": false},
+    {"en": "Dindori", "mr": "दिंडोरी", "hi": "दिंडोरी", "reviewed": false}
+  ]
+}
