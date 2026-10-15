@@ -5,43 +5,52 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rules import recommend  # noqa: E402
+from rules import load_rules, recommend  # noqa: E402
 
 FAKE_RULES = [
     {
         "id": "wheat",
         "names": {"en": "Wheat", "mr": "गहू", "hi": "गेहूं", "reviewed": False},
+        "season": "rabi",
         "talukas": ["Niphad", "Sinnar"],
         "sowing_months": [10, 11],
         "irrigation": "required",
+        "soil_types": ["medium", "heavy"],
         "ph_min": 6.0,
         "ph_max": 7.5,
         "avoid_after": ["wheat"],
-        "source": "test",
+        "good_after": None,
+        "source": ["test"],
         "verified": True,
     },
     {
         "id": "bajra",
         "names": {"en": "Pearl millet", "mr": "बाजरी", "hi": "बाजरा", "reviewed": False},
+        "season": "kharif",
         "talukas": "all",
         "sowing_months": [6, 7],
         "irrigation": "rainfed",
+        "soil_types": ["light"],
         "ph_min": None,
         "ph_max": None,
         "avoid_after": None,
-        "source": "test",
+        "good_after": None,
+        "source": ["test"],
         "verified": False,
     },
     {
-        "id": "onion",
-        "names": {"en": "Onion", "mr": "कांदा", "hi": "प्याज", "reviewed": False},
+        "id": "onion_rabi",
+        "names": {"en": "Onion (Rabi)", "mr": "कांदा (रब्बी)", "hi": "प्याज (रबी)", "reviewed": False},
+        "season": "rabi",
         "talukas": "all",
         "sowing_months": None,
         "irrigation": "optional",
+        "soil_types": None,
         "ph_min": None,
         "ph_max": None,
         "avoid_after": None,
-        "source": "test",
+        "good_after": ["maize"],
+        "source": ["test"],
         "verified": True,
     },
 ]
@@ -71,6 +80,19 @@ def test_avoid_after_hard_rule_removes_crop():
     assert "wheat" not in ids  # can't grow wheat right after wheat
 
 
+def test_soil_type_hard_rule_removes_crop():
+    results = recommend("Niphad", 11, "yes", None, soil_type="light", rules=FAKE_RULES)
+    ids = [r["id"] for r in results]
+    assert "wheat" not in ids  # wheat needs medium/heavy soil, farmer has light
+
+
+def test_soil_type_none_does_not_remove_crop():
+    # No soil_type given at all -> soil_types check is skipped, not a failure.
+    results = recommend("Niphad", 11, "yes", None, rules=FAKE_RULES)
+    ids = [r["id"] for r in results]
+    assert "wheat" in ids
+
+
 def test_ph_soft_rule_lowers_score():
     in_range = recommend("Niphad", 11, "yes", None, soil={"ph": 7.0}, rules=FAKE_RULES)
     out_of_range = recommend("Niphad", 11, "yes", None, soil={"ph": 9.0}, rules=FAKE_RULES)
@@ -80,6 +102,25 @@ def test_ph_soft_rule_lowers_score():
 
     assert wheat_out_of_range["score"] < wheat_in_range["score"]
     assert any(r["code"] == "ph_out_of_range" for r in wheat_out_of_range["reasons"])
+
+
+def test_good_after_bonus_raises_score():
+    after_maize = recommend("Dindori", 1, "yes", "maize", rules=FAKE_RULES)
+    after_nothing = recommend("Dindori", 1, "yes", None, rules=FAKE_RULES)
+
+    onion_after_maize = next(r for r in after_maize if r["id"] == "onion_rabi")
+    onion_after_nothing = next(r for r in after_nothing if r["id"] == "onion_rabi")
+
+    assert onion_after_maize["score"] > onion_after_nothing["score"]
+    assert any(r["code"] == "good_rotation" for r in onion_after_maize["reasons"])
+
+
+def test_sowing_unknown_reason_when_months_null():
+    # onion_rabi has sowing_months=None, so any month should keep it and
+    # flag the reason, instead of silently passing the sowing-month check.
+    results = recommend("Dindori", 5, "yes", None, rules=FAKE_RULES)
+    onion = next(r for r in results if r["id"] == "onion_rabi")
+    assert any(r["code"] == "sowing_unknown" for r in onion["reasons"])
 
 
 def test_null_fields_are_skipped_not_treated_as_failure():
@@ -99,6 +140,15 @@ def test_max_three_results():
 def test_empty_list_when_nothing_qualifies():
     results = recommend("Dindori", 1, "yes", None, rules=[FAKE_RULES[0]])
     assert results == []
+
+
+def test_onion_split_in_real_data():
+    # Phase 2 replaced the single "onion" crop with two seasonal entries.
+    real_rules = load_rules()
+    ids = [c["id"] for c in real_rules]
+    assert "onion" not in ids
+    assert "onion_kharif" in ids
+    assert "onion_rabi" in ids
 
 
 def test_api_rejects_bad_input():
@@ -127,3 +177,31 @@ def test_api_rejects_bad_input():
         "soil": {"ph": 20},
     })
     assert bad_ph.status_code == 400
+
+    bad_soil_type = client.post("/recommend-crop", json={
+        "taluka": "Niphad", "sowing_month": 11, "irrigation": "yes",
+        "soil_type": "rocky",
+    })
+    assert bad_soil_type.status_code == 400
+
+
+def test_api_accepts_valid_soil_type():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    reply = client.post("/recommend-crop", json={
+        "taluka": "Niphad", "sowing_month": 11, "irrigation": "yes",
+        "soil_type": "medium",
+    })
+    assert reply.status_code == 200
+    assert reply.get_json()["success"] is True
+
+
+def test_api_soil_types_endpoint():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    reply = client.get("/soil-types")
+    assert reply.status_code == 200
+    ids = [s["id"] for s in reply.get_json()["soil_types"]]
+    assert ids == ["light", "medium", "heavy"]

@@ -1,4 +1,4 @@
-# Crop recommendation API (Module 2, Phase 1 - rule engine only, no LLM, no weather).
+# Crop recommendation API (Module 2, Phase 2 - rule engine only, no LLM, no weather).
 # Run:  python app.py
 import json
 import os
@@ -10,6 +10,7 @@ from rules import load_rules, recommend
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 TALUKAS_FILE = os.path.join(DATA_DIR, "talukas.json")
+SOIL_TYPES_FILE = os.path.join(DATA_DIR, "soil_types.json")
 PORT = 5003
 
 app = Flask(__name__)
@@ -18,7 +19,10 @@ print("Loading crop rules ...")
 crop_rules = load_rules()
 with open(TALUKAS_FILE, encoding="utf-8") as f:
     talukas = json.load(f)["talukas"]
+with open(SOIL_TYPES_FILE, encoding="utf-8") as f:
+    soil_types = json.load(f)["soil_types"]
 taluka_names = {t["en"].lower() for t in talukas}
+soil_type_ids = {s["id"] for s in soil_types}
 print(f"Crop rules ready. {len(crop_rules)} crops, {sum(c['verified'] for c in crop_rules)} verified.")
 
 
@@ -40,6 +44,11 @@ def health():
 @app.get("/talukas")
 def get_talukas():
     return jsonify({"talukas": talukas})
+
+
+@app.get("/soil-types")
+def get_soil_types():
+    return jsonify({"soil_types": soil_types})
 
 
 @app.post("/recommend-crop")
@@ -67,6 +76,10 @@ def recommend_crop():
     if ph is not None and not (0 <= ph <= 14):
         errors.append("soil.ph must be between 0 and 14.")
 
+    soil_type = body.get("soil_type")
+    if soil_type is not None and soil_type not in soil_type_ids:
+        errors.append(f"Unknown soil_type '{soil_type}'.")
+
     if errors:
         return error(errors)
 
@@ -77,6 +90,7 @@ def recommend_crop():
         irrigation=irrigation,
         previous_crop=previous_crop,
         soil=soil,
+        soil_type=soil_type,
         rules=crop_rules,
     )
     return jsonify({"success": True, "recommendations": recommendations, "source": "rules"})
