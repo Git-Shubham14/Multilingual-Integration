@@ -10,7 +10,11 @@ STARTING_SCORE = 100
 PH_PENALTY = 20
 UNVERIFIED_PENALTY = 10
 GOOD_ROTATION_BONUS = 15
+DRY_SPELL_PENALTY = 10
 MAX_RESULTS = 3
+
+# ICAR 2011 sec 2.1.1: less than 2.5 mm rain over 2 weeks counts as a dry spell.
+DRY_SPELL_RAIN_MM = 2.5
 
 
 def load_rules(path=DEFAULT_RULES_FILE):
@@ -19,7 +23,8 @@ def load_rules(path=DEFAULT_RULES_FILE):
     return data["crops"]
 
 
-def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_type=None, rules=None):
+def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_type=None,
+              weather=None, rules=None):
     if rules is None:
         rules = load_rules()
     soil = soil or {}
@@ -66,6 +71,17 @@ def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_t
         if good_after is not None and previous_crop in good_after:
             score += GOOD_ROTATION_BONUS
             reasons.append({"code": "good_rotation", "text": f"Good to grow after {previous_crop}"})
+
+        if weather is not None and crop.get("season") == "kharif" \
+                and sowing_months is not None and sowing_month in sowing_months \
+                and weather.get("rain_last_14_days_mm") is not None \
+                and weather["rain_last_14_days_mm"] < DRY_SPELL_RAIN_MM:
+            score -= DRY_SPELL_PENALTY
+            reasons.append({
+                "code": "dry_spell",
+                "text": "Less than 2.5 mm rain in the last 14 days. ICAR defines this as a "
+                        "dry spell; sowing may need protective irrigation.",
+            })
 
         if not crop.get("verified", False):
             score -= UNVERIFIED_PENALTY

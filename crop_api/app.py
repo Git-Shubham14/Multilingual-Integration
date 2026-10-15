@@ -1,4 +1,4 @@
-# Crop recommendation API (Module 2, Phase 2 - rule engine only, no LLM, no weather).
+# Crop recommendation API (Module 2, Phase 3 - rule engine + Open-Meteo weather).
 # Run:  python app.py
 import json
 import os
@@ -6,6 +6,7 @@ import os
 from flask import Flask, jsonify, request
 
 from rules import load_rules, recommend
+from weather import get_weather
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -21,9 +22,18 @@ with open(TALUKAS_FILE, encoding="utf-8") as f:
     talukas = json.load(f)["talukas"]
 with open(SOIL_TYPES_FILE, encoding="utf-8") as f:
     soil_types = json.load(f)["soil_types"]
-taluka_names = {t["en"].lower() for t in talukas}
+taluka_by_name = {t["en"].lower(): t for t in talukas}
 soil_type_ids = {s["id"] for s in soil_types}
+# used by /health as a cheap, known-good point to test the weather API with
+HEALTH_CHECK_TALUKA = next((t for t in talukas if t.get("latitude") is not None), None)
 print(f"Crop rules ready. {len(crop_rules)} crops, {sum(c['verified'] for c in crop_rules)} verified.")
+
+
+def weather_for_taluka(taluka):
+    """taluka is the matched entry from talukas.json, or None."""
+    if taluka is None or taluka.get("latitude") is None or taluka.get("longitude") is None:
+        return None
+    return get_weather(taluka["latitude"], taluka["longitude"])
 
 
 def error(messages, code=400):
@@ -34,10 +44,12 @@ def error(messages, code=400):
 
 @app.get("/health")
 def health():
+    weather_ok = weather_for_taluka(HEALTH_CHECK_TALUKA) is not None
     return jsonify({
         "status": "ok",
         "crops": len(crop_rules),
         "verified_crops": sum(c["verified"] for c in crop_rules),
+        "weather_ok": weather_ok,
     })
 
 
@@ -51,6 +63,19 @@ def get_soil_types():
     return jsonify({"soil_types": soil_types})
 
 
+@app.get("/weather")
+def weather_route():
+    taluka_name = request.args.get("taluka") or ""
+    taluka = taluka_by_name.get(taluka_name.lower())
+    if taluka is None:
+        return error(f"Unknown taluka '{taluka_name}'.")
+
+    weather = weather_for_taluka(taluka)
+    if weather is None:
+        return jsonify({"weather": None, "weather_note": "Weather unavailable"})
+    return jsonify({"weather": weather})
+
+
 @app.post("/recommend-crop")
 def recommend_crop():
     body = request.get_json(silent=True)
@@ -60,7 +85,7 @@ def recommend_crop():
     errors = []
 
     taluka = body.get("taluka")
-    if not taluka or taluka.lower() not in taluka_names:
+    if not taluka or taluka.lower() not in taluka_by_name:
         errors.append(f"Unknown taluka '{taluka}'.")
 
     sowing_month = body.get("sowing_month")
@@ -84,6 +109,7 @@ def recommend_crop():
         return error(errors)
 
     previous_crop = body.get("previous_crop")
+    weather = weather_for_taluka(taluka_by_name.get(taluka.lower()))
     recommendations = recommend(
         taluka=taluka,
         sowing_month=sowing_month,
@@ -91,9 +117,14 @@ def recommend_crop():
         previous_crop=previous_crop,
         soil=soil,
         soil_type=soil_type,
+        weather=weather,
         rules=crop_rules,
     )
-    return jsonify({"success": True, "recommendations": recommendations, "source": "rules"})
+
+    reply = {"success": True, "recommendations": recommendations, "source": "rules", "weather": weather}
+    if weather is None:
+        reply["weather_note"] = "Weather unavailable"
+    return jsonify(reply)
 
 
 if __name__ == "__main__":

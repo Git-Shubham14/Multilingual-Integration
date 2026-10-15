@@ -29,3 +29,32 @@ the plan; crops with `verified: false` have some fields from the plan
 Still needed (tracked in the main `CLAUDE.md`): Soil Health Card data for
 pH ranges, taluka-level breakdowns, and verification of the other 8 crops'
 sowing windows.
+
+## Open-Meteo (weather + geocoding)
+
+- Service: Open-Meteo, https://open-meteo.com -- free, no API key needed.
+- Geocoding API (`geocoding-api.open-meteo.com/v1/search`) is used once,
+  by `scripts/fetch_taluka_coords.py`, to look up each taluka headquarters
+  town's latitude/longitude. Results are only accepted if `country_code`
+  is `IN`, `admin1` is `Maharashtra`, `admin2` is `Nashik`, and `admin3`
+  names the taluka itself (or a known alternate spelling) -- otherwise a
+  same-named place in a different district or taluka could be saved by
+  mistake. Kalwan, Chandwad and Deola needed an alternate spelling
+  (Kalvan, Chandor, Devla) before a real match showed up; all 15 talukas
+  are resolved as of this phase.
+- Forecast API (`api.open-meteo.com/v1/forecast`) is called per request by
+  `weather.py`, using each taluka's saved coordinates, to get current
+  conditions plus 14 days of past rainfall and a 7-day forecast. Cached
+  in memory for 1 hour per taluka. Weather is a soft signal only: if the
+  API is slow, down, or returns something unexpected, `get_weather()`
+  returns `None` and the recommendation still goes through without it.
+
+### ICAR dry spell definition
+
+- Source: ICAR 2011 sec 2.1.1 -- a kharif sowing window is considered a
+  "dry spell" when there has been less than 2.5 mm of rain over the
+  preceding 2 weeks.
+- `rules.py` uses this only as a soft warning (`dry_spell` reason, -10
+  score) for a kharif crop in its own sowing month; it never removes a
+  crop from the results, and it is skipped entirely when weather data is
+  unavailable.

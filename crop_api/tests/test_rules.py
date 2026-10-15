@@ -1,7 +1,9 @@
 # Tests for the rule engine. Uses a small fake rules list here, not the
 # real crop_rules.json, so these tests do not depend on Shubham's real data.
+# No real network calls: anything that would reach the weather API is mocked.
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -123,6 +125,31 @@ def test_sowing_unknown_reason_when_months_null():
     assert any(r["code"] == "sowing_unknown" for r in onion["reasons"])
 
 
+def test_dry_spell_lowers_score_for_kharif_crop_in_sowing_month():
+    dry = recommend("Dindori", 6, "yes", None, weather={"rain_last_14_days_mm": 1.0}, rules=FAKE_RULES)
+    wet = recommend("Dindori", 6, "yes", None, weather={"rain_last_14_days_mm": 10.0}, rules=FAKE_RULES)
+
+    bajra_dry = next(r for r in dry if r["id"] == "bajra")
+    bajra_wet = next(r for r in wet if r["id"] == "bajra")
+
+    assert bajra_dry["score"] < bajra_wet["score"]
+    assert any(r["code"] == "dry_spell" for r in bajra_dry["reasons"])
+    assert not any(r["code"] == "dry_spell" for r in bajra_wet["reasons"])
+
+
+def test_no_dry_spell_for_rabi_crop():
+    # wheat is rabi -- a dry spell reading should never apply to it.
+    results = recommend("Niphad", 11, "yes", None, weather={"rain_last_14_days_mm": 1.0}, rules=FAKE_RULES)
+    wheat = next(r for r in results if r["id"] == "wheat")
+    assert not any(r["code"] == "dry_spell" for r in wheat["reasons"])
+
+
+def test_no_dry_spell_when_weather_is_none():
+    results = recommend("Dindori", 6, "yes", None, weather=None, rules=FAKE_RULES)
+    bajra = next(r for r in results if r["id"] == "bajra")
+    assert not any(r["code"] == "dry_spell" for r in bajra["reasons"])
+
+
 def test_null_fields_are_skipped_not_treated_as_failure():
     # bajra has every soft/hard field null or "all" except irrigation/months;
     # giving no soil data at all must not remove or penalise it for pH.
@@ -189,10 +216,11 @@ def test_api_accepts_valid_soil_type():
     from app import app as flask_app
 
     client = flask_app.test_client()
-    reply = client.post("/recommend-crop", json={
-        "taluka": "Niphad", "sowing_month": 11, "irrigation": "yes",
-        "soil_type": "medium",
-    })
+    with patch("app.get_weather", return_value=None):
+        reply = client.post("/recommend-crop", json={
+            "taluka": "Niphad", "sowing_month": 11, "irrigation": "yes",
+            "soil_type": "medium",
+        })
     assert reply.status_code == 200
     assert reply.get_json()["success"] is True
 
@@ -205,3 +233,36 @@ def test_api_soil_types_endpoint():
     assert reply.status_code == 200
     ids = [s["id"] for s in reply.get_json()["soil_types"]]
     assert ids == ["light", "medium", "heavy"]
+
+
+def test_api_returns_200_with_weather_null_when_weather_fails():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    with patch("app.get_weather", return_value=None):
+        reply = client.post("/recommend-crop", json={
+            "taluka": "Niphad", "sowing_month": 11, "irrigation": "yes",
+        })
+    assert reply.status_code == 200
+    data = reply.get_json()
+    assert data["success"] is True
+    assert data["weather"] is None
+    assert data["weather_note"] == "Weather unavailable"
+
+
+def test_weather_route_reports_unavailable_when_weather_fails():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    with patch("app.get_weather", return_value=None):
+        reply = client.get("/weather?taluka=Niphad")
+    assert reply.status_code == 200
+    assert reply.get_json()["weather"] is None
+
+
+def test_weather_route_rejects_unknown_taluka():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    reply = client.get("/weather?taluka=Nowhere")
+    assert reply.status_code == 400
