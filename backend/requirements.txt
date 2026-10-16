@@ -16,3 +16,4 @@ SpeechRecognition
 imageio-ffmpeg
 openai
 emoji
+pytest

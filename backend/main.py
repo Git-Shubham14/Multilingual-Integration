@@ -368,6 +368,41 @@ class DiseaseResponse(BaseModel):
     top: list[DiseaseTopGuess] = []
 
 
+class CropRequest(BaseModel):
+    taluka: str
+    sowing_month: int
+    irrigation: str
+    previous_crop: Optional[str] = None
+    soil_type: Optional[str] = None
+    soil: Optional[dict] = None
+    language: str = "mr"
+
+
+class CropEvidenceRef(BaseModel):
+    page: Optional[int] = None
+    section: Optional[str] = None
+
+
+class CropRecommendationOut(BaseModel):
+    id: str
+    name: str
+    reason: str
+    risk: str
+    sowing_months: Optional[list] = None
+    evidence_refs: list[CropEvidenceRef] = []
+
+
+class CropResponse(BaseModel):
+    success: bool = True
+    language: str
+    source: str  # "llm" or "rules"
+    crops: list[CropRecommendationOut] = []
+    weather: Optional[dict] = None
+    disclaimer: str
+    # Only set for the no-recommendations case (crops is then empty).
+    message: Optional[str] = None
+
+
 class CreateChatRequest(BaseModel):
     title: str
 
@@ -806,6 +841,443 @@ async def chat(request: ChatRequest):
         question_en=question_en,
         timings=timings,
         translation_failed=translation_failed,
+    )
+
+
+# ─── Crop recommendation (forwards to Shubham's crop_api, explained by Nemotron) ──
+
+CROP_API_URL = os.getenv("CROP_API_URL", "http://127.0.0.1:5003")
+# Its own models (independent of /api/chat's LLM_MODEL/LLM_FALLBACK_MODEL):
+# Super answered faster than Ultra in practice, so Super goes first and Ultra
+# is only the hedge backup.
+CROP_LLM_MODEL = os.getenv("CROP_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+CROP_LLM_FALLBACK_MODEL = os.getenv("CROP_LLM_FALLBACK_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+# Shorter total budget than /api/chat's LLM_TIMEOUT (40s) — if neither model
+# has answered by CROP_LLM_TOTAL_TIMEOUT, _crop_llm_complete cancels both
+# in-flight requests (see its docstring) and the caller falls back to rules.
+CROP_LLM_HEDGE_AFTER = float(os.getenv("CROP_LLM_HEDGE_AFTER", "5"))
+CROP_LLM_TOTAL_TIMEOUT = float(os.getenv("CROP_LLM_TOTAL_TIMEOUT", "10"))
+# Higher than /api/chat's LLM_MAX_TOKENS (600) -- up to 3 crops' reason+risk
+# in Devanagari script costs noticeably more tokens than the same text in
+# English, and a cut-off reply can silently drop the later crops from the
+# JSON (or make it invalid) just as easily as a real LLM error would.
+CROP_LLM_MAX_TOKENS = int(os.getenv("CROP_LLM_MAX_TOKENS", "900"))
+
+CROP_MESSAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "crop_messages.json")
+_crop_messages: Optional[dict] = None
+_crop_llm_client_instance: Optional[AsyncOpenAI] = None
+
+CROP_LLM_SYSTEM_PROMPT = (
+    "You explain crop options to a Nashik farmer. Use ONLY the crops and "
+    "evidence given below. Reply ONLY with JSON, no markdown, no extra text: "
+    '{{"crops":[{{"id":"...","reason":"...","risk":"..."}}]}} in {language}. '
+    "Return exactly one entry for EACH crop id listed, in the same order. "
+    "Use the ids exactly as given. Each reason and risk must be at most 2 "
+    "short sentences. Never mention pesticide or fertilizer names or "
+    "amounts, yields, prices, profit, or success chances. Do not quote "
+    "humidity or temperature numbers. If unsure, say to confirm with the "
+    "local KVK."
+)
+
+# Pesticide/chemical words the LLM must never use (copied from
+# crop_api/scripts/build_chunks.py's CHEMICAL_WORDS, plus common Marathi/Hindi
+# pesticide/fungicide/spraying words, since this LLM can answer in mr/hi
+# directly — CLAUDE.md: a wrong dose or product name could harm the crop).
+_CROP_UNSAFE_WORDS = [
+    "spraying", "endosulfan", "monocrotophos", "phorate", "chloropyriphos",
+    "dimethoate", "mancozeb", "quinolphos", "parathion",
+    "कीटकनाशक", "फवारणी", "छिड़काव", "बुरशीनाशक", "फफूंदनाशक",
+]
+# Dose/price units immediately after a digit (ASCII or Devanagari ०-९), plus
+# the % and ₹ symbols. "Rs"/"रुपये"/"रुपए" double as price markers.
+#
+# मिलीमीटर/मिमी/मि.मी (millimetre, used for rainfall, e.g. "०.८ मिलीमीटर
+# पाऊस") and "mm" are deliberately NOT dose units — मिली is a prefix of
+# मिलीमीटर, so it needs a negative lookahead to not swallow it; "ml"/"g" are
+# matched only as whole words (not followed by another word character) so a
+# plain word like "good" is never mistaken for the unit "g".
+_CROP_DOSE_PRICE_UNITS_SUBSTRING = [
+    "kg", "Rs", "मि.ली", "किग्रा", "किलो", "ग्रॅम",
+    "ग्राम", "लिटर", "टक्के", "प्रतिशत", "रुपये", "रुपए",
+]
+_CROP_DOSE_PRICE_UNITS_WHOLE_WORD = ["ml", "g"]
+_CROP_DOSE_PRICE_PATTERN = re.compile(
+    r"[0-9०-९]+\.?[0-9०-९]*\s*(%|₹|मिली(?!मीटर)|"
+    + "|".join(re.escape(u) for u in _CROP_DOSE_PRICE_UNITS_SUBSTRING)
+    + "|"
+    + "|".join(rf"{re.escape(u)}(?!\w)" for u in _CROP_DOSE_PRICE_UNITS_WHOLE_WORD)
+    + r")"
+)
+
+
+def _crop_text_is_unsafe(text: str) -> bool:
+    """True if `text` names a pesticide/fungicide or gives a dose/price —
+    content the crop LLM must never produce. Matching text is replaced with
+    the rules-based fallback text for that crop."""
+    if not text:
+        return False
+    lower = text.lower()
+    if any(word.lower() in lower for word in _CROP_UNSAFE_WORDS):
+        return True
+    return bool(_CROP_DOSE_PRICE_PATTERN.search(text))
+
+
+_LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
+_DEVANAGARI_LETTER_PATTERN = re.compile(r"[ऀ-ॿ]")
+
+
+def _crop_text_is_wrong_language(text: str, language: str) -> bool:
+    """True if `language` is mr/hi but `text` is mostly Latin letters — the
+    LLM answered in English despite CROP_LLM_SYSTEM_PROMPT's "Write only in
+    Devanagari script" instruction (seen in practice: Nemotron sometimes
+    writes one crop's reason/risk in English while getting the others
+    right). A farmer reading mr/hi should never see this, so it is treated
+    the same as unsafe content and replaced with the fallback text."""
+    if language not in ("mr", "hi") or not text:
+        return False
+    latin = len(_LATIN_LETTER_PATTERN.findall(text))
+    devanagari = len(_DEVANAGARI_LETTER_PATTERN.findall(text))
+    return latin > devanagari
+
+
+def _load_crop_messages() -> dict:
+    """Load backend/data/crop_messages.json once and cache it in memory."""
+    global _crop_messages
+    if _crop_messages is None:
+        with open(CROP_MESSAGES_PATH, encoding="utf-8") as f:
+            _crop_messages = json.load(f)
+    return _crop_messages
+
+
+def _crop_message(key: str, language: str) -> str:
+    entry = _load_crop_messages()[key]
+    return entry.get(language) or entry.get("en", "")
+
+
+def _crop_reason_text(code: str, language: str) -> str:
+    entry = _load_crop_messages()["reasons"].get(code)
+    if not entry:
+        return ""
+    return entry.get(language) or entry.get("en", "")
+
+
+def _crop_display_name(rec: dict, language: str) -> str:
+    names = rec.get("names") or {}
+    return names.get(language) or names.get("en") or rec["id"]
+
+
+def _fallback_crop_entry(rec: dict, language: str, fallback_reason: str) -> dict:
+    """Build a crop's reason/risk from crop_messages.json's reason-code texts
+    (used when the LLM is unavailable, invalid, or wrote unsafe/wrong-language
+    content). `fallback_reason` is one of "missing", "unsafe", "wrong_language"
+    — logged per crop by the /api/crop route so a drift like Nemotron
+    answering one crop in English can be seen in the backend log."""
+    texts = [_crop_reason_text(r["code"], language) for r in rec.get("reasons") or []]
+    texts = [t for t in texts if t]
+    reason_text = " ".join(texts) if texts else _crop_reason_text("not_verified", language)
+    return {
+        "id": rec["id"], "reason": reason_text, "risk": "",
+        "source": "fallback", "fallback_reason": fallback_reason,
+    }
+
+
+def _get_crop_llm_client() -> AsyncOpenAI:
+    """Same NVIDIA endpoint as chat's client; a separate key (NVIDIA_API_KEY_CROP)
+    is used only if set, so crop traffic can be rate-limited independently."""
+    crop_key = os.getenv("NVIDIA_API_KEY_CROP")
+    if not crop_key:
+        return _get_llm_client()
+    global _crop_llm_client_instance
+    if _crop_llm_client_instance is None:
+        _crop_llm_client_instance = AsyncOpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=crop_key,
+            timeout=LLM_TIMEOUT,
+            max_retries=0,
+        )
+    return _crop_llm_client_instance
+
+
+async def _cancel_and_drain(tasks: list) -> None:
+    """Cancel every task that is still running and await all of them so
+    their results/exceptions are retrieved. Without this, a losing hedge
+    request that's still in flight when we stop waiting on it (total
+    timeout, or the other model already won) keeps running in the
+    background; if it later raises, nobody ever reads that exception and
+    Python logs "Task exception was never retrieved" once it's garbage
+    collected — this is exactly how Ultra kept running to its own 40s
+    client timeout after Super had already answered."""
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _crop_llm_complete(messages: list) -> str:
+    """Hedged Nemotron call for /api/crop: ask CROP_LLM_MODEL first; if it
+    hasn't answered within CROP_LLM_HEDGE_AFTER seconds, also ask
+    CROP_LLM_FALLBACK_MODEL and use whichever answers first (same hedge
+    pattern as _chat_direct, but its own models, timing, and client —
+    /api/chat's hedge is untouched). The whole call is capped at
+    CROP_LLM_TOTAL_TIMEOUT seconds total; raises asyncio.TimeoutError past
+    that, which the caller treats as a fallback. Whatever happens (a model
+    wins, both fail, or the total timeout fires), every task this call
+    created is cancelled and drained before returning — see
+    _cancel_and_drain."""
+    client = _get_crop_llm_client()
+    all_tasks: list[asyncio.Task] = []
+
+    def complete(model: str):
+        task = asyncio.create_task(client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.3,
+            top_p=0.9,
+            max_tokens=CROP_LLM_MAX_TOKENS,
+            extra_body=_llm_extra_body(model),
+        ))
+        all_tasks.append(task)
+        return task
+
+    async def hedge():
+        completion, failed = None, []
+        pending = {complete(CROP_LLM_MODEL)}
+        timeout = CROP_LLM_HEDGE_AFTER
+        while completion is None:
+            if not pending:
+                raise failed[-1].exception()
+            done, pending = await asyncio.wait(
+                pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                if t.exception():
+                    failed.append(t)
+                elif completion is None:
+                    completion = t.result()
+            if completion is None and timeout is not None and CROP_LLM_FALLBACK_MODEL:
+                logger.warning("Crop LLM %s slow or failed; also trying %s", CROP_LLM_MODEL, CROP_LLM_FALLBACK_MODEL)
+                pending.add(complete(CROP_LLM_FALLBACK_MODEL))
+            timeout = None  # hedge only once; then wait for whichever finishes
+        return completion
+
+    try:
+        completion = await asyncio.wait_for(hedge(), timeout=CROP_LLM_TOTAL_TIMEOUT)
+        return (completion.choices[0].message.content or "").strip()
+    finally:
+        await _cancel_and_drain(all_tasks)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Nemotron sometimes wraps JSON in a ```json ... ``` fence despite being
+    told not to; strip it before parsing."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+    return text
+
+
+def _parse_llm_crops_json(raw_text: str) -> Optional[list]:
+    try:
+        data = json.loads(raw_text)
+        crops = data.get("crops")
+        return crops if isinstance(crops, list) else None
+    except Exception:
+        return None
+
+
+def _apply_crop_validator(llm_crops: list, recommendations: list, language: str) -> list:
+    """
+    Turn the LLM's (possibly empty/partial/unsafe/wrong-language) crop list
+    into one entry per crop_api recommendation, in crop_api's order:
+      - an id the LLM invented (not in `recommendations`) is ignored
+      - a reason/risk containing a dose, price, or pesticide word is replaced
+        by that crop's rules-based fallback text (fallback_reason "unsafe")
+      - a reason/risk mostly in Latin letters when mr/hi was requested is
+        replaced the same way (fallback_reason "wrong_language")
+      - any crop_api recommendation the LLM didn't return at all is
+        backfilled with its rules-based fallback text (fallback_reason
+        "missing")
+    Each returned entry also carries "source" ("llm" or "fallback") and
+    "fallback_reason" (None for "llm"), which the /api/crop route logs per
+    crop so a language/content drift like Nemotron's can be seen in the log.
+    """
+    rec_by_id = {r["id"]: r for r in recommendations}
+    validated_by_id: dict = {}
+
+    for item in llm_crops:
+        if not isinstance(item, dict):
+            continue
+        cid = item.get("id")
+        if cid not in rec_by_id:
+            continue
+        reason = str(item.get("reason") or "").strip()
+        risk = str(item.get("risk") or "").strip()
+        if _crop_text_is_unsafe(reason) or _crop_text_is_unsafe(risk):
+            validated_by_id[cid] = _fallback_crop_entry(rec_by_id[cid], language, "unsafe")
+        elif _crop_text_is_wrong_language(reason, language) or _crop_text_is_wrong_language(risk, language):
+            validated_by_id[cid] = _fallback_crop_entry(rec_by_id[cid], language, "wrong_language")
+        else:
+            validated_by_id[cid] = {
+                "id": cid, "reason": reason, "risk": risk,
+                "source": "llm", "fallback_reason": None,
+            }
+
+    for rec in recommendations:
+        if rec["id"] not in validated_by_id:
+            validated_by_id[rec["id"]] = _fallback_crop_entry(rec, language, "missing")
+
+    return [validated_by_id[rec["id"]] for rec in recommendations]
+
+
+@app.post("/api/crop", response_model=CropResponse)
+async def crop_check(request: CropRequest):
+    """
+    Forward the farmer's inputs to crop_api (a separate Flask service on
+    port 5003 — see crop_api/app.py) for rule-based recommendations, then ask
+    Nemotron to explain them in the farmer's language. If the LLM is slow,
+    unavailable, or writes anything unsafe, fall back to fixed rule-based
+    text instead (source: "rules").
+    """
+    lang = request.language if request.language in LANGUAGE_NAMES else "en"
+    t_total_start = time.perf_counter()
+
+    crop_payload = {
+        "taluka": request.taluka,
+        "sowing_month": request.sowing_month,
+        "irrigation": request.irrigation,
+        "previous_crop": request.previous_crop,
+        "soil_type": request.soil_type,
+        "soil": request.soil or {},
+    }
+
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            crop_response = await client.post(f"{CROP_API_URL}/recommend-crop", json=crop_payload)
+    except httpx.ConnectError:
+        logger.error(
+            "crop_api unreachable at %s — start it with: cd crop_api && python app.py",
+            CROP_API_URL,
+        )
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+    except httpx.RequestError as e:
+        logger.error("Error contacting crop_api: %s", e)
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+    crop_api_ms = round((time.perf_counter() - t0) * 1000)
+
+    if crop_response.status_code != 200:
+        if 400 <= crop_response.status_code < 500:
+            # Bad input (e.g. unknown taluka) -- pass crop_api's own errors
+            # straight through, same pattern as /api/disease's error passthrough.
+            logger.info("crop_api rejected the request (%s): %s", crop_response.status_code, crop_response.text[:200])
+            return JSONResponse(status_code=crop_response.status_code, content=crop_response.json())
+        logger.error("crop_api returned %s: %s", crop_response.status_code, crop_response.text[:200])
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+
+    body = crop_response.json()
+    recommendations = body.get("recommendations") or []
+    weather = body.get("weather")
+
+    if not recommendations:
+        total_ms = round((time.perf_counter() - t_total_start) * 1000)
+        logger.info("Crop timings (ms): crop_api=%s llm=0 total=%s", crop_api_ms, total_ms)
+        return CropResponse(
+            language=lang,
+            source="rules",
+            crops=[],
+            weather=weather,
+            disclaimer=_crop_message("disclaimer", lang),
+            message=_crop_message("no_crops", lang),
+        )
+
+    evidence_budget = 1200
+    evidence_lines = []
+    for rec in recommendations:
+        for ev in rec.get("evidence") or []:
+            if evidence_budget <= 0:
+                break
+            text = ev["text"][:evidence_budget]
+            evidence_lines.append(f"[{rec['id']} p{ev.get('page')} {ev.get('section')}] {text}")
+            evidence_budget -= len(text)
+    evidence_text = "\n".join(evidence_lines)
+
+    crop_lines = []
+    for rec in recommendations:
+        names = rec.get("names") or {}
+        reasons = "; ".join(r["text"] for r in rec.get("reasons") or [])
+        crop_lines.append(
+            f"- id={rec['id']} name_en={names.get('en', rec['id'])} "
+            f"sowing_months={rec.get('sowing_months')} reasons=[{reasons}]"
+        )
+    weather_line = f"Weather: {json.dumps(weather)}" if weather else "Weather: unavailable"
+    user_content = (
+        "Crops:\n" + "\n".join(crop_lines) + "\n" + weather_line +
+        "\n\nEvidence (ICAR Nashik contingency plan):\n" + evidence_text
+    )
+
+    language_name = LANGUAGE_NAMES.get(lang, "English")
+    crop_system_prompt = CROP_LLM_SYSTEM_PROMPT.format(language=language_name)
+    if lang in ("mr", "hi"):
+        crop_system_prompt += (
+            " Write only in Devanagari script. Do not use English letters. "
+            "Use short, simple everyday words."
+        )
+    messages = [
+        {"role": "system", "content": crop_system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    source = "rules"
+    validated = None
+    llm_ms = 0
+    t0 = time.perf_counter()
+    try:
+        raw_text = await _crop_llm_complete(messages)
+        llm_ms = round((time.perf_counter() - t0) * 1000)
+        parsed = _parse_llm_crops_json(_strip_code_fence(raw_text))
+        if parsed is not None:
+            validated = _apply_crop_validator(parsed, recommendations, lang)
+            source = "llm"
+    except asyncio.TimeoutError:
+        llm_ms = round((time.perf_counter() - t0) * 1000)
+        logger.warning("Crop LLM timed out after %.1fs; using rules fallback", CROP_LLM_TOTAL_TIMEOUT)
+    except Exception as e:
+        llm_ms = round((time.perf_counter() - t0) * 1000)
+        logger.warning("Crop LLM failed (%s); using rules fallback", e)
+
+    if validated is None:
+        validated = _apply_crop_validator([], recommendations, lang)
+
+    validated_by_id = {c["id"]: c for c in validated}
+    final_crops = []
+    per_crop_log = []
+    for rec in recommendations:
+        v = validated_by_id[rec["id"]]
+        final_crops.append({
+            "id": rec["id"],
+            "name": _crop_display_name(rec, lang),
+            "reason": v["reason"],
+            "risk": v["risk"],
+            "sowing_months": rec.get("sowing_months"),
+            "evidence_refs": [
+                {"page": e.get("page"), "section": e.get("section")} for e in rec.get("evidence") or []
+            ],
+        })
+        tag = v["source"] if v["source"] == "llm" else f"fallback({v['fallback_reason']})"
+        per_crop_log.append(f"{rec['id']}={tag}")
+
+    total_ms = round((time.perf_counter() - t_total_start) * 1000)
+    logger.info("Crop timings (ms): crop_api=%s llm=%s total=%s", crop_api_ms, llm_ms, total_ms)
+    logger.info("Crop per-crop source: %s", ", ".join(per_crop_log))
+
+    return CropResponse(
+        language=lang,
+        source=source,
+        crops=final_crops,
+        weather=weather,
+        disclaimer=_crop_message("disclaimer", lang),
     )
 
 

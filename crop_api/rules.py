@@ -90,6 +90,7 @@ def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_t
         results.append({
             "id": crop["id"],
             "names": crop.get("names"),
+            "sowing_months": sowing_months,
             "score": score,
             "reasons": reasons,
         })

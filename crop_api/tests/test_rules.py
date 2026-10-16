@@ -169,6 +169,19 @@ def test_empty_list_when_nothing_qualifies():
     assert results == []
 
 
+def test_result_includes_names_and_sowing_months():
+    results = recommend("Niphad", 11, "yes", None, rules=FAKE_RULES)
+    wheat = next(r for r in results if r["id"] == "wheat")
+    assert wheat["names"] == {"en": "Wheat", "mr": "गहू", "hi": "गेहूं", "reviewed": False}
+    assert wheat["sowing_months"] == [10, 11]
+
+
+def test_result_sowing_months_is_none_when_unverified():
+    results = recommend("Dindori", 5, "yes", None, rules=FAKE_RULES)
+    onion = next(r for r in results if r["id"] == "onion_rabi")
+    assert onion["sowing_months"] is None
+
+
 def test_onion_split_in_real_data():
     # Phase 2 replaced the single "onion" crop with two seasonal entries.
     real_rules = load_rules()
