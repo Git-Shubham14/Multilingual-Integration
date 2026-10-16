@@ -60,6 +60,42 @@ def _mock_crop_api_response(json_body, status_code=200):
     return httpx.Response(status_code, json=json_body, request=request)
 
 
+def _mock_crop_api_get(url, *args, **kwargs):
+    """Fake GET responses for /api/crop/options' three parallel calls to
+    crop_api (talukas, soil-types, crops), keyed by the request URL."""
+    request = httpx.Request("GET", url)
+    if str(url).endswith("/talukas"):
+        return httpx.Response(200, json={
+            "talukas": [{"en": "Niphad", "mr": "निफाड", "hi": "निफाड", "reviewed": False}],
+        }, request=request)
+    if str(url).endswith("/soil-types"):
+        return httpx.Response(200, json={
+            "soil_types": [{"id": "heavy", "en": "Heavy soil", "mr": "भारी जमीन", "hi": "भारी मिट्टी", "reviewed": False}],
+        }, request=request)
+    if str(url).endswith("/crops"):
+        return httpx.Response(200, json={
+            "crops": [{"id": "wheat", "names": {"en": "Wheat", "mr": "गहू", "hi": "गेहूं", "reviewed": False}}],
+        }, request=request)
+    return httpx.Response(404, json={}, request=request)
+
+
+def test_crop_options_combines_crop_api_endpoints():
+    with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=_mock_crop_api_get)):
+        response = client.get("/api/crop/options?language=mr")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["talukas"][0]["en"] == "Niphad"
+    assert body["soil_types"][0]["id"] == "heavy"
+    assert body["crops"][0]["id"] == "wheat"
+
+
+def test_crop_options_service_down_when_crop_api_unreachable():
+    with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=httpx.ConnectError("refused"))):
+        response = client.get("/api/crop/options?language=mr")
+    assert response.status_code == 503
+    assert response.json()["detail"] == main._crop_message("service_down", "mr")
+
+
 def test_service_down_when_crop_api_unreachable():
     with patch.object(httpx.AsyncClient, "post", AsyncMock(side_effect=httpx.ConnectError("refused"))):
         response = client.post("/api/crop", json=CROP_REQUEST_BODY)

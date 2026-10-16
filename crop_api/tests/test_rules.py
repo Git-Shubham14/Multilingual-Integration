@@ -248,6 +248,20 @@ def test_api_soil_types_endpoint():
     assert ids == ["light", "medium", "heavy"]
 
 
+def test_api_crops_endpoint():
+    from app import app as flask_app
+
+    client = flask_app.test_client()
+    reply = client.get("/crops")
+    assert reply.status_code == 200
+    crops = reply.get_json()["crops"]
+    ids = [c["id"] for c in crops]
+    assert "wheat" in ids
+    assert "maize" in ids
+    wheat = next(c for c in crops if c["id"] == "wheat")
+    assert wheat["names"]["en"] == "Wheat"
+
+
 def test_api_returns_200_with_weather_null_when_weather_fails():
     from app import app as flask_app
 

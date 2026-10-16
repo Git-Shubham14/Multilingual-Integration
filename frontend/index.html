@@ -160,6 +160,15 @@
         </div>
         <input type="file" id="photo-input" accept="image/*" class="hidden" aria-hidden="true" />
 
+        <!-- Crop Advisor Button -->
+        <div class="mic-container">
+          <button class="mic-btn mic-btn-green" id="crop-advisor-btn" aria-label="Crop Advisor"
+            title="Crop Advisor">
+            🌾
+          </button>
+          <div class="mic-label" id="crop-advisor-label" aria-hidden="true">Crop Advisor</div>
+        </div>
+
         <!-- Text Input -->
         <div class="text-input-wrapper">
           <textarea id="text-input" placeholder="Type English text here... (Shift+Enter for new line)" rows="1"
@@ -236,6 +245,86 @@
           <!-- Populated by JS -->
         </div>
       </div>
+
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════
+     CROP ADVISOR MODAL
+═══════════════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="crop-advisor-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="crop-advisor-modal-title">
+    <div class="modal modal-scrollable crop-advisor-modal" id="crop-advisor-modal">
+
+      <div class="modal-header">
+        <div class="modal-title" id="crop-advisor-modal-title">🌾 Crop Advisor</div>
+        <button class="modal-close" id="crop-advisor-close" aria-label="Close crop advisor">✕</button>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label" id="crop-advisor-taluka-label" for="crop-advisor-taluka">Taluka</label>
+        <select class="modal-input" id="crop-advisor-taluka"></select>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label" id="crop-advisor-month-label" for="crop-advisor-month">Sowing month</label>
+        <select class="modal-input" id="crop-advisor-month"></select>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label" id="crop-advisor-irrigation-label">Irrigation available?</label>
+        <div class="toggle-group" id="crop-advisor-irrigation" role="radiogroup"
+          aria-labelledby="crop-advisor-irrigation-label">
+          <button type="button" class="toggle-btn" data-value="yes">Yes</button>
+          <button type="button" class="toggle-btn" data-value="no">No</button>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label" id="crop-advisor-soiltype-label" for="crop-advisor-soiltype">Soil type</label>
+        <select class="modal-input" id="crop-advisor-soiltype"></select>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label" id="crop-advisor-prevcrop-label" for="crop-advisor-prevcrop">Previous crop</label>
+        <select class="modal-input" id="crop-advisor-prevcrop"></select>
+      </div>
+
+      <details class="modal-section crop-advisor-soilcard">
+        <summary class="modal-label crop-advisor-soilcard-summary" id="crop-advisor-soilcard-label">
+          Soil Health Card values (optional)
+        </summary>
+        <div class="crop-advisor-soilcard-grid">
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-ph-label" for="crop-advisor-ph">pH</label>
+            <input class="modal-input" id="crop-advisor-ph" type="number" step="0.1" min="0" max="14"
+              inputmode="decimal" />
+          </div>
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-ec-label" for="crop-advisor-ec">EC (dS/m)</label>
+            <input class="modal-input" id="crop-advisor-ec" type="number" step="0.01" min="0" inputmode="decimal" />
+          </div>
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-oc-label" for="crop-advisor-oc">OC (%)</label>
+            <input class="modal-input" id="crop-advisor-oc" type="number" step="0.01" min="0" inputmode="decimal" />
+          </div>
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-n-label" for="crop-advisor-n">N (kg/ha)</label>
+            <input class="modal-input" id="crop-advisor-n" type="number" step="1" min="0" inputmode="decimal" />
+          </div>
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-p-label" for="crop-advisor-p">P (kg/ha)</label>
+            <input class="modal-input" id="crop-advisor-p" type="number" step="1" min="0" inputmode="decimal" />
+          </div>
+          <div class="crop-advisor-field">
+            <label class="modal-label" id="crop-advisor-k-label" for="crop-advisor-k">K (kg/ha)</label>
+            <input class="modal-input" id="crop-advisor-k" type="number" step="1" min="0" inputmode="decimal" />
+          </div>
+        </div>
+      </details>
+
+      <button class="modal-save modal-save-green" id="crop-advisor-submit">Get crop advice</button>
 
     </div>
   </div>

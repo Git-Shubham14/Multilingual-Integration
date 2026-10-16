@@ -52,8 +52,17 @@ const Config = (() => {
 
 /* ─── Language Selector (mr / hi / en) ───────────────────── */
 const LanguageSelector = (() => {
+  const _listeners = [];
+
   function getLanguage() {
     return Config.get("language") || "mr";
+  }
+
+  // Lets other modules (e.g. CropAdvisor) re-localize their own UI text
+  // when the farmer switches language, without LanguageSelector needing
+  // to know anything about them.
+  function onChange(callback) {
+    _listeners.push(callback);
   }
 
   function _applyActiveState(lang) {
@@ -67,12 +76,13 @@ const LanguageSelector = (() => {
       btn.addEventListener("click", () => {
         Config.save({ language: btn.dataset.lang });
         _applyActiveState(btn.dataset.lang);
+        _listeners.forEach((cb) => cb(btn.dataset.lang));
       });
     });
     _applyActiveState(getLanguage());
   }
 
-  return { init, getLanguage };
+  return { init, getLanguage, onChange };
 })();
 
 
@@ -139,6 +149,41 @@ const API = (() => {
     return response.json();
   }
 
+  // Talukas, soil types and crops for the Crop Advisor form's dropdowns.
+  async function cropOptions() {
+    const apiUrl = Config.get("apiUrl");
+    const response = await fetch(
+      `${apiUrl}/api/crop/options?language=${LanguageSelector.getLanguage()}`
+    );
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `API Error: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  // Crop recommendation + Nemotron explanation. 20s client timeout — the
+  // backend's own LLM budget is 10s, so this leaves slack for crop_api and
+  // network time before giving up with a friendly message.
+  async function cropAdvice(payload) {
+    const apiUrl = Config.get("apiUrl");
+    const response = await fetch(`${apiUrl}/api/crop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errors = Array.isArray(data.errors) ? data.errors.join(" ") : null;
+      const err = new Error(data.detail || errors || `API Error: ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
+    return data;
+  }
+
   async function createChat(title) {
     const apiUrl = Config.get("apiUrl");
     const response = await fetch(`${apiUrl}/api/chats`, {
@@ -171,7 +216,10 @@ const API = (() => {
     return response.json();
   }
 
-  return { speechToText, textToSpeech, healthCheck, chat, createChat, getChats, getChatMessages, saveMessage };
+  return {
+    speechToText, textToSpeech, healthCheck, chat, createChat, getChats, getChatMessages, saveMessage,
+    cropOptions, cropAdvice,
+  };
 })();
 
 /* ─── Disease Check (leaf photo upload) ──────────────────── */
@@ -1103,6 +1151,107 @@ const ChatUI = (() => {
     return msg;
   }
 
+  /**
+   * Add the Crop Advisor result bubble (bot side).
+   * `labels` is CropI18n's label object for the farmer's current language
+   * (resultLabel, riskLabel, sourceLabel, rainLabel, mm, monthName()).
+   * `onSpeak` is called (with no args) when the 🔊 button is tapped —
+   * speaking is on-tap only, never automatic, since this text is long.
+   */
+  function addCropResult(result, labels, onSpeak) {
+    _hideWelcome();
+    const msg = document.createElement("div");
+    msg.className = "message bot";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.appendChild(_createLabel(labels.resultLabel));
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble crop-result";
+
+    const speakRow = document.createElement("div");
+    speakRow.className = "crop-result-speak-row";
+    const speakBtn = document.createElement("button");
+    speakBtn.className = "crop-result-speak-btn";
+    speakBtn.type = "button";
+    speakBtn.innerHTML = "🔊";
+    speakBtn.title = labels.speakTitle;
+    speakBtn.setAttribute("aria-label", labels.speakTitle);
+    speakBtn.addEventListener("click", () => {
+      if (onSpeak) onSpeak(speakBtn);
+    });
+    speakRow.appendChild(speakBtn);
+    bubble.appendChild(speakRow);
+
+    (result.crops || []).forEach((crop) => {
+      const item = document.createElement("div");
+      item.className = "crop-result-item";
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "crop-result-name";
+      nameEl.textContent = crop.name;
+      item.appendChild(nameEl);
+
+      if (Array.isArray(crop.sowing_months) && crop.sowing_months.length > 0) {
+        const monthsEl = document.createElement("div");
+        monthsEl.className = "crop-result-months";
+        monthsEl.textContent = crop.sowing_months.map(labels.monthName).join(", ");
+        item.appendChild(monthsEl);
+      }
+
+      if (crop.reason) {
+        const reasonEl = document.createElement("div");
+        reasonEl.className = "crop-result-reason";
+        reasonEl.textContent = crop.reason;
+        item.appendChild(reasonEl);
+      }
+
+      if (crop.risk) {
+        const riskEl = document.createElement("div");
+        riskEl.className = "crop-result-risk";
+        const riskLabel = document.createElement("span");
+        riskLabel.className = "crop-result-risk-label";
+        riskLabel.textContent = labels.riskLabel + ": ";
+        riskEl.appendChild(riskLabel);
+        riskEl.appendChild(document.createTextNode(crop.risk));
+        item.appendChild(riskEl);
+      }
+
+      if (Array.isArray(crop.evidence_refs) && crop.evidence_refs.length > 0) {
+        const sourceEl = document.createElement("div");
+        sourceEl.className = "crop-result-source";
+        const refs = crop.evidence_refs
+          .map((r) => `p${r.page}${r.section ? " sec " + r.section : ""}`)
+          .join(", ");
+        sourceEl.textContent = `${labels.sourceLabel}: ICAR 2011, ${refs}`;
+        item.appendChild(sourceEl);
+      }
+
+      bubble.appendChild(item);
+    });
+
+    if (result.weather && typeof result.weather.rain_last_14_days_mm === "number") {
+      const weatherEl = document.createElement("div");
+      weatherEl.className = "crop-result-weather";
+      weatherEl.textContent = `${labels.rainLabel}: ${result.weather.rain_last_14_days_mm} ${labels.mm}`;
+      bubble.appendChild(weatherEl);
+    }
+
+    if (result.disclaimer) {
+      const disclaimerEl = document.createElement("div");
+      disclaimerEl.className = "crop-result-disclaimer";
+      disclaimerEl.textContent = result.disclaimer;
+      bubble.appendChild(disclaimerEl);
+    }
+
+    body.appendChild(bubble);
+    msg.appendChild(_createAvatar("bot"));
+    msg.appendChild(body);
+    _chatArea.appendChild(msg);
+    _scrollToBottom();
+    return { msg, speakBtn };
+  }
+
   function _formatTime(seconds) {
     if (!isFinite(seconds) || isNaN(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
@@ -1120,6 +1269,7 @@ const ChatUI = (() => {
     addUserPhoto,
     addDiseaseLoading,
     addDiseaseResult,
+    addCropResult,
     addError,
   };
 })();
@@ -1230,16 +1380,252 @@ const CropPicker = (() => {
 })();
 
 
+/* ─── Crop Advisor i18n (Module 2 Phase 5) ───────────────────
+   The app has no other UI-string localization yet (LanguageSelector only
+   picks the backend's reply language) — this is the first one, built
+   fresh for the Crop Advisor form and result card. reviewed:false: a
+   first-pass mr/hi translation, not checked by a native speaker/KVK yet
+   (same convention as backend/data/crop_messages.json). ─────────────── */
+const CropI18n = (() => {
+  const STRINGS = {
+    buttonLabel:  { mr: "पीक सल्ला", hi: "फसल सलाह", en: "Crop Advisor" },
+    modalTitle:   { mr: "🌾 पीक सल्ला", hi: "🌾 फसल सलाह", en: "🌾 Crop Advisor" },
+    taluka:       { mr: "तालुका", hi: "तालुका", en: "Taluka" },
+    sowingMonth:  { mr: "पेरणीचा महिना", hi: "बुवाई का महीना", en: "Sowing month" },
+    irrigation:   { mr: "पाण्याची सुविधा आहे का?", hi: "सिंचाई की सुविधा है?", en: "Irrigation available?" },
+    yes:          { mr: "हो", hi: "हाँ", en: "Yes" },
+    no:           { mr: "नाही", hi: "नहीं", en: "No" },
+    soilType:     { mr: "जमिनीचा प्रकार", hi: "मिट्टी का प्रकार", en: "Soil type" },
+    previousCrop: { mr: "मागील पीक", hi: "पिछली फसल", en: "Previous crop" },
+    none:         { mr: "काहीही नाही", hi: "कोई नहीं", en: "None" },
+    soilCard:     { mr: "माती आरोग्य पत्रिका मूल्ये (पर्यायी)", hi: "मृदा स्वास्थ्य कार्ड मूल्य (वैकल्पिक)", en: "Soil Health Card values (optional)" },
+    ph:           { mr: "pH", hi: "pH", en: "pH" },
+    ec:           { mr: "EC (dS/m)", hi: "EC (dS/m)", en: "EC (dS/m)" },
+    oc:           { mr: "OC (%)", hi: "OC (%)", en: "OC (%)" },
+    n:            { mr: "N (kg/ha)", hi: "N (kg/ha)", en: "N (kg/ha)" },
+    p:            { mr: "P (kg/ha)", hi: "P (kg/ha)", en: "P (kg/ha)" },
+    k:            { mr: "K (kg/ha)", hi: "K (kg/ha)", en: "K (kg/ha)" },
+    submit:       { mr: "पीक सल्ला मिळवा", hi: "फसल सलाह पाएं", en: "Get crop advice" },
+    loading:      { mr: "पीक सल्ला तयार होत आहे…", hi: "फसल सलाह तैयार हो रही है…", en: "Preparing crop advice…" },
+    timeoutError: { mr: "सध्या उत्तर मिळत नाही. कृपया पुन्हा प्रयत्न करा.", hi: "अभी जवाब नहीं मिल रहा है। कृपया फिर से प्रयास करें.", en: "This is taking too long. Please try again." },
+    optionsError: { mr: "फॉर्मसाठी माहिती मिळाली नाही. कृपया नंतर प्रयत्न करा.", hi: "फ़ॉर्म के लिए जानकारी नहीं मिली। कृपया बाद में प्रयास करें.", en: "Could not load the form. Please try again later." },
+    resultLabel:  { mr: "🌾 पीक सल्ला निकाल", hi: "🌾 फसल सलाह परिणाम", en: "🌾 Crop Advisor Result" },
+    riskLabel:    { mr: "धोका", hi: "जोखिम", en: "Risk" },
+    sourceLabel:  { mr: "स्रोत", hi: "स्रोत", en: "Source" },
+    rainLabel:    { mr: "गेल्या १४ दिवसांतील पाऊस", hi: "पिछले 14 दिनों की बारिश", en: "Rain in the last 14 days" },
+    mm:           { mr: "मिमी", hi: "मिमी", en: "mm" },
+    speakTitle:   { mr: "ऐकण्यासाठी दाबा", hi: "सुनने के लिए दबाएँ", en: "Tap to hear this" },
+  };
+
+  const MONTHS = {
+    mr: ["जानेवारी", "फेब्रुवारी", "मार्च", "एप्रिल", "मे", "जून", "जुलै", "ऑगस्ट", "सप्टेंबर", "ऑक्टोबर", "नोव्हेंबर", "डिसेंबर"],
+    hi: ["जनवरी", "फरवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"],
+    en: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+  };
+
+  function t(key, lang) {
+    const entry = STRINGS[key];
+    if (!entry) return key;
+    return entry[lang] || entry.en || key;
+  }
+
+  function monthName(monthNum, lang) {
+    const arr = MONTHS[lang] || MONTHS.en;
+    return arr[monthNum - 1] || String(monthNum);
+  }
+
+  // A snapshot of every label for one language, so call sites (e.g.
+  // ChatUI.addCropResult) don't each need to know the current language.
+  function getLabels(lang) {
+    const labels = {};
+    Object.keys(STRINGS).forEach((key) => { labels[key] = t(key, lang); });
+    labels.monthName = (monthNum) => monthName(monthNum, lang);
+    return labels;
+  }
+
+  return { t, monthName, getLabels };
+})();
+
+
+/* ─── Crop Advisor Modal (Module 2 Phase 5) ──────────────────
+   Form UI only (open/close/populate/read) — API calls and chat rendering
+   are orchestrated by App, same split as CropPicker/DiseaseCheck. ───── */
+const CropAdvisorModal = (() => {
+  let _overlay, _talukaSelect, _monthSelect, _soilTypeSelect, _prevCropSelect;
+  let _irrigationGroup, _submitBtn;
+  let _onSubmit = null;
+  let _options = null; // cached {talukas, soil_types, crops} from API.cropOptions()
+  let _irrigationValue = "yes";
+
+  function _localized(entry, lang) {
+    return (entry && (entry[lang] || entry.en)) || "";
+  }
+
+  function _populateSelect(select, items, { valueKey, labelFn, includeNone = false, noneLabel = "" }) {
+    const previous = select.value;
+    select.innerHTML = "";
+    if (includeNone) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = noneLabel;
+      select.appendChild(opt);
+    }
+    items.forEach((item) => {
+      const opt = document.createElement("option");
+      opt.value = valueKey(item);
+      opt.textContent = labelFn(item);
+      select.appendChild(opt);
+    });
+    if (previous) select.value = previous;
+  }
+
+  function _populateMonths(lang) {
+    const previous = _monthSelect.value;
+    _monthSelect.innerHTML = "";
+    for (let m = 1; m <= 12; m++) {
+      const opt = document.createElement("option");
+      opt.value = String(m);
+      opt.textContent = CropI18n.monthName(m, lang);
+      _monthSelect.appendChild(opt);
+    }
+    // Default to the current month the first time; keep the farmer's
+    // choice on later language switches.
+    _monthSelect.value = previous || String(new Date().getMonth() + 1);
+  }
+
+  function _populateOptions(options, lang) {
+    const labels = CropI18n.getLabels(lang);
+    _populateSelect(_talukaSelect, options.talukas || [], {
+      valueKey: (t) => t.en, // crop_api matches talukas by English name
+      labelFn: (t) => _localized(t, lang),
+    });
+    _populateSelect(_soilTypeSelect, options.soil_types || [], {
+      valueKey: (s) => s.id,
+      labelFn: (s) => _localized(s, lang),
+    });
+    _populateSelect(_prevCropSelect, options.crops || [], {
+      valueKey: (c) => c.id,
+      labelFn: (c) => _localized(c.names, lang),
+      includeNone: true,
+      noneLabel: labels.none,
+    });
+    _populateMonths(lang);
+  }
+
+  function _applyIrrigationSelection() {
+    _irrigationGroup.querySelectorAll(".toggle-btn").forEach((btn) => {
+      btn.classList.toggle("selected", btn.dataset.value === _irrigationValue);
+    });
+  }
+
+  function applyLanguage() {
+    const lang = LanguageSelector.getLanguage();
+    const labels = CropI18n.getLabels(lang);
+    document.getElementById("crop-advisor-modal-title").textContent = labels.modalTitle;
+    document.getElementById("crop-advisor-taluka-label").textContent = labels.taluka;
+    document.getElementById("crop-advisor-month-label").textContent = labels.sowingMonth;
+    document.getElementById("crop-advisor-irrigation-label").textContent = labels.irrigation;
+    document.getElementById("crop-advisor-soiltype-label").textContent = labels.soilType;
+    document.getElementById("crop-advisor-prevcrop-label").textContent = labels.previousCrop;
+    document.getElementById("crop-advisor-soilcard-label").textContent = labels.soilCard;
+    document.getElementById("crop-advisor-ph-label").textContent = labels.ph;
+    document.getElementById("crop-advisor-ec-label").textContent = labels.ec;
+    document.getElementById("crop-advisor-oc-label").textContent = labels.oc;
+    document.getElementById("crop-advisor-n-label").textContent = labels.n;
+    document.getElementById("crop-advisor-p-label").textContent = labels.p;
+    document.getElementById("crop-advisor-k-label").textContent = labels.k;
+    _submitBtn.textContent = labels.submit;
+    _irrigationGroup.querySelector('[data-value="yes"]').textContent = labels.yes;
+    _irrigationGroup.querySelector('[data-value="no"]').textContent = labels.no;
+
+    if (_options) _populateOptions(_options, lang);
+  }
+
+  function init(onSubmit) {
+    _onSubmit = onSubmit;
+    _overlay = document.getElementById("crop-advisor-overlay");
+    _talukaSelect = document.getElementById("crop-advisor-taluka");
+    _monthSelect = document.getElementById("crop-advisor-month");
+    _soilTypeSelect = document.getElementById("crop-advisor-soiltype");
+    _prevCropSelect = document.getElementById("crop-advisor-prevcrop");
+    _irrigationGroup = document.getElementById("crop-advisor-irrigation");
+    _submitBtn = document.getElementById("crop-advisor-submit");
+
+    document.getElementById("crop-advisor-close").addEventListener("click", close);
+    _overlay.addEventListener("click", (e) => {
+      if (e.target === _overlay) close();
+    });
+
+    _irrigationGroup.querySelectorAll(".toggle-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _irrigationValue = btn.dataset.value;
+        _applyIrrigationSelection();
+      });
+    });
+    _applyIrrigationSelection();
+
+    _submitBtn.addEventListener("click", () => {
+      if (_onSubmit) _onSubmit(_readForm());
+    });
+
+    applyLanguage();
+  }
+
+  function open(options) {
+    _options = options;
+    _irrigationValue = "yes";
+    _applyIrrigationSelection();
+    applyLanguage();
+    _overlay.classList.add("open");
+  }
+
+  function close() {
+    _overlay.classList.remove("open");
+  }
+
+  function setSubmitEnabled(enabled) {
+    _submitBtn.disabled = !enabled;
+  }
+
+  function _numberOrUndefined(id) {
+    const val = document.getElementById(id).value.trim();
+    return val === "" ? undefined : Number(val);
+  }
+
+  function _readForm() {
+    return {
+      taluka: _talukaSelect.value,
+      sowing_month: Number(_monthSelect.value),
+      irrigation: _irrigationValue,
+      previous_crop: _prevCropSelect.value || null,
+      soil_type: _soilTypeSelect.value || null,
+      soil: {
+        ph: _numberOrUndefined("crop-advisor-ph"),
+        ec: _numberOrUndefined("crop-advisor-ec"),
+        oc: _numberOrUndefined("crop-advisor-oc"),
+        n: _numberOrUndefined("crop-advisor-n"),
+        p: _numberOrUndefined("crop-advisor-p"),
+        k: _numberOrUndefined("crop-advisor-k"),
+      },
+    };
+  }
+
+  return { init, open, close, applyLanguage, setSubmitEnabled };
+})();
+
+
 /* ─── App ─────────────────────────────────────────────────── */
 const App = (() => {
   let _micBtn, _micLabel;
   let _textInput, _sendBtn;
   let _transcriptEl;
   let _photoBtn, _photoInput;
+  let _cropAdvisorBtn, _cropAdvisorLabel;
   let _pendingCrop = null;
   let _isProcessing = false;
   let _interimText = "";
   let _finalLiveText = "";
+  let _cropOptionsCache = null;
 
   function init() {
     // DOM refs
@@ -1250,6 +1636,8 @@ const App = (() => {
     _transcriptEl = document.getElementById("input-transcript");
     _photoBtn = document.getElementById("photo-btn");
     _photoInput = document.getElementById("photo-input");
+    _cropAdvisorBtn = document.getElementById("crop-advisor-btn");
+    _cropAdvisorLabel = document.getElementById("crop-advisor-label");
 
     const chatArea = document.getElementById("chat-area");
     const welcomeScreen = document.getElementById("welcome-screen");
@@ -1262,6 +1650,16 @@ const App = (() => {
       _pendingCrop = crop;
       _photoInput.click();
     });
+    CropAdvisorModal.init((formData) => _handleCropAdvisorSubmit(formData));
+
+    // Re-localize the Crop Advisor button + modal whenever the farmer
+    // switches language (the rest of the app's UI text doesn't localize
+    // today, but the Crop Advisor's labels are built to, from the start).
+    LanguageSelector.onChange(() => {
+      _updateCropAdvisorButtonLabel();
+      CropAdvisorModal.applyLanguage();
+    });
+    _updateCropAdvisorButtonLabel();
 
     // Settings button
     document.getElementById("settings-btn").addEventListener("click", Settings.open);
@@ -1279,6 +1677,9 @@ const App = (() => {
         _handlePhotoUpload(file, crop);
       }
     });
+
+    // Crop Advisor button
+    _cropAdvisorBtn.addEventListener("click", _openCropAdvisor);
 
     // Text input
     _textInput.addEventListener("keydown", (e) => {
@@ -1496,6 +1897,104 @@ const App = (() => {
       return "The leaf-check service isn't reachable right now. Please make sure it's running and try again.";
     }
     return raw || "Something went wrong while checking the leaf. Please try again.";
+  }
+
+  // ── Crop Advisor: button + modal → /api/crop ────────────
+  function _updateCropAdvisorButtonLabel() {
+    const label = CropI18n.t("buttonLabel", LanguageSelector.getLanguage());
+    _cropAdvisorBtn.title = label;
+    _cropAdvisorBtn.setAttribute("aria-label", label);
+    _cropAdvisorLabel.textContent = label;
+  }
+
+  async function _openCropAdvisor() {
+    if (_isProcessing) return;
+    const lang = LanguageSelector.getLanguage();
+    try {
+      if (!_cropOptionsCache) {
+        _cropOptionsCache = await API.cropOptions();
+      }
+      CropAdvisorModal.open(_cropOptionsCache);
+    } catch (err) {
+      console.warn("Could not load crop advisor options:", err);
+      ChatUI.addError(CropI18n.t("optionsError", lang));
+    }
+  }
+
+  async function _handleCropAdvisorSubmit(formData) {
+    if (_isProcessing) return;
+    _isProcessing = true;
+    CropAdvisorModal.setSubmitEnabled(false);
+    CropAdvisorModal.close();
+
+    const lang = LanguageSelector.getLanguage();
+    const labels = CropI18n.getLabels(lang);
+    const loadingEl = ChatUI.addDiseaseLoading(labels.loading);
+
+    try {
+      const result = await API.cropAdvice({ ...formData, language: lang });
+      loadingEl.remove();
+      if (Array.isArray(result.crops) && result.crops.length > 0) {
+        ChatUI.addCropResult(result, labels, (speakBtn) => _speakCropAdvice(result, lang, speakBtn));
+      } else {
+        // service_down/no_crops/400 all land here as a normal message —
+        // result.message (or disclaimer alone) is already in the farmer's language.
+        const text = [result.message, result.disclaimer].filter(Boolean).join("\n\n");
+        ChatUI.addBotText(labels.resultLabel, text || labels.timeoutError);
+      }
+    } catch (err) {
+      loadingEl.remove();
+      ChatUI.addError(_friendlyCropError(err, lang));
+    } finally {
+      _isProcessing = false;
+      CropAdvisorModal.setSubmitEnabled(true);
+    }
+  }
+
+  // ── Speak only names/reason/risk/disclaimer — not source/evidence —
+  //    and only when the farmer taps 🔊 (this text is long, unlike the
+  //    short disease message, so it is never spoken automatically) ────
+  function _buildCropSpokenText(result) {
+    const parts = [];
+    (result.crops || []).forEach((crop) => {
+      if (crop.name) parts.push(crop.name);
+      if (crop.reason) parts.push(crop.reason);
+      if (crop.risk) parts.push(crop.risk);
+    });
+    if (result.disclaimer) parts.push(result.disclaimer);
+    return parts.join(". ");
+  }
+
+  async function _speakCropAdvice(result, language, speakBtn) {
+    const text = _buildCropSpokenText(result);
+    if (!text) return;
+
+    speakBtn.disabled = true;
+    speakBtn.classList.add("playing");
+    try {
+      const ttsResult = await API.textToSpeech(text, Config.get("voice"), language);
+      ChatUI.addTTSResult(
+        ttsResult.marathi_text,
+        ttsResult.word_timings,
+        ttsResult.audio_base64,
+        ttsResult.voice || Config.get("voice"),
+        ttsResult.duration || 3,
+      );
+    } catch (err) {
+      // Voice failed — the card's text is already showing, so just log it.
+      console.warn("Could not speak crop advice:", err);
+    } finally {
+      speakBtn.disabled = false;
+      speakBtn.classList.remove("playing");
+    }
+  }
+
+  // ── Turn a /api/crop error into a farmer-friendly message ──────────
+  function _friendlyCropError(err, lang) {
+    if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      return CropI18n.t("timeoutError", lang);
+    }
+    return (err && err.message) || CropI18n.t("timeoutError", lang);
   }
 
   // ── Send English text → API ─────────────────────────────

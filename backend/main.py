@@ -1131,6 +1131,42 @@ def _apply_crop_validator(llm_crops: list, recommendations: list, language: str)
     return [validated_by_id[rec["id"]] for rec in recommendations]
 
 
+@app.get("/api/crop/options")
+async def crop_options(language: str = "en"):
+    """
+    One combined call for the Crop Advisor form: crop_api's talukas,
+    soil types, and crops (id + names), fetched in parallel. Used to
+    populate the form's dropdowns before the farmer submits /api/crop.
+    """
+    lang = language if language in LANGUAGE_NAMES else "en"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            talukas_resp, soil_resp, crops_resp = await asyncio.gather(
+                client.get(f"{CROP_API_URL}/talukas"),
+                client.get(f"{CROP_API_URL}/soil-types"),
+                client.get(f"{CROP_API_URL}/crops"),
+            )
+    except httpx.ConnectError:
+        logger.error(
+            "crop_api unreachable at %s — start it with: cd crop_api && python app.py",
+            CROP_API_URL,
+        )
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+    except httpx.RequestError as e:
+        logger.error("Error contacting crop_api: %s", e)
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+
+    if any(r.status_code != 200 for r in (talukas_resp, soil_resp, crops_resp)):
+        logger.error("crop_api returned a non-200 status for /api/crop/options")
+        raise HTTPException(status_code=503, detail=_crop_message("service_down", lang))
+
+    return {
+        "talukas": talukas_resp.json().get("talukas", []),
+        "soil_types": soil_resp.json().get("soil_types", []),
+        "crops": crops_resp.json().get("crops", []),
+    }
+
+
 @app.post("/api/crop", response_model=CropResponse)
 async def crop_check(request: CropRequest):
     """

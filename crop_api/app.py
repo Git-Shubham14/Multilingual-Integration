@@ -70,6 +70,11 @@ def get_soil_types():
     return jsonify({"soil_types": soil_types})
 
 
+@app.get("/crops")
+def get_crops():
+    return jsonify({"crops": [{"id": c["id"], "names": c.get("names")} for c in crop_rules]})
+
+
 @app.get("/evidence")
 def evidence_route():
     crop_id = request.args.get("crop") or ""
