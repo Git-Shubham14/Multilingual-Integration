@@ -223,6 +223,94 @@ def test_wrong_language_detector():
     assert main._crop_text_is_wrong_language("This is fine in English.", "en") is False
 
 
+def test_wrong_language_detector_catches_latin_glued_onto_devanagari_word():
+    # Seen in production: Nemotron wrote "विशेषज्ञanci" -- a Devanagari word
+    # with an English suffix glued on, with no space/boundary between them.
+    assert main._crop_text_is_wrong_language("स्थानिक विशेषज्ञanci सल्ला घ्या.", "mr") is True
+
+
+def test_wrong_language_detector_allows_kvk_and_icar():
+    assert main._crop_text_is_wrong_language("स्थानिक KVK शी संपर्क करा.", "mr") is False
+    assert main._crop_text_is_wrong_language("ICAR च्या अहवालानुसार हे पीक योग्य आहे.", "hi") is False
+
+
+def test_mr_word_fixes_replaces_whole_words_only():
+    text = "सितंबर आणि अक्टूबर मध्ये रबी फसल ची बुवाई करा."
+    fixed = main._apply_mr_word_fixes(text)
+    assert fixed == "सप्टेंबर आणि ऑक्टोबर मध्ये रब्बी पीक ची पेरणी करा."
+
+
+def test_mr_word_fixes_leaves_unlisted_words_alone():
+    text = "कांदा ऑक्टोबरमध्ये पेरणीसाठी योग्य आहे."
+    assert main._apply_mr_word_fixes(text) == text
+
+
+def test_mr_word_fixes_strips_punctuation_before_matching():
+    assert main._apply_mr_word_fixes("सीजन.") == "हंगाम."
+    assert main._apply_mr_word_fixes("(खरीफ)") == "(खरीप)"
+
+
+def test_mr_word_fixes_handles_marathi_suffix_glued_onto_hindi_word():
+    assert main._apply_mr_word_fixes("अक्टूबरमध्ये") == "ऑक्टोबरमध्ये"
+    assert main._apply_mr_word_fixes("रबीच्या") == "रब्बीच्या"
+    assert main._apply_mr_word_fixes("फसलसाठी पाणी द्या.") == "पीकसाठी पाणी द्या."
+
+
+def test_mr_word_fixes_does_not_match_an_unlisted_suffix():
+    # "अक्टूबरनुसार" has a suffix ("नुसार") that is not in the allowed list,
+    # so it must be left alone rather than guessed at.
+    text = "अक्टूबरनुसार पेरणी करा."
+    assert main._apply_mr_word_fixes(text) == text
+
+
+def test_mr_word_fixes_handles_alternate_hindi_spellings():
+    # सितम्बर/नवम्बर/अक्टोबर are alternate (explicit-consonant) spellings of
+    # the same Hindi months as सितंबर/नवंबर/अक्टूबर, seen from the LLM too.
+    assert main._apply_mr_word_fixes("सितम्बर") == "सप्टेंबर"
+    assert main._apply_mr_word_fixes("अक्टोबर") == "ऑक्टोबर"
+    assert main._apply_mr_word_fixes("नवम्बर") == "नोव्हेंबर"
+
+
+def test_crop_validator_applies_mr_word_fixes_to_llm_text():
+    recs = [{"id": "chickpea", "names": {"en": "Chickpea"}, "reasons": []}]
+    llm_crops = [{"id": "chickpea", "reason": "रबी सीजन मध्ये बुवाई करा.", "risk": "कमी धोका."}]
+    result = main._apply_crop_validator(llm_crops, recs, "mr")
+    chickpea = result[0]
+    assert chickpea["source"] == "llm"
+    assert chickpea["reason"] == "रब्बी हंगाम मध्ये पेरणी करा."
+
+
+def test_crop_validator_does_not_apply_mr_word_fixes_for_hi():
+    # The fixes are Hindi-word -> Marathi-word; they must never run when the
+    # farmer actually asked for Hindi.
+    recs = [{"id": "chickpea", "names": {"en": "Chickpea"}, "reasons": []}]
+    llm_crops = [{"id": "chickpea", "reason": "रबी सीजन मध्ये बुवाई करा.", "risk": "कमी धोका."}]
+    result = main._apply_crop_validator(llm_crops, recs, "hi")
+    chickpea = result[0]
+    assert chickpea["source"] == "llm"
+    assert chickpea["reason"] == "रबी सीजन मध्ये बुवाई करा."
+
+
+def test_crop_validator_replaces_risk_with_not_verified_when_equal_to_reason():
+    # The LLM repeated the reason as the risk -- reason must stay, risk
+    # must become the not_verified fallback text, source stays "llm".
+    recs = [{"id": "chickpea", "names": {"en": "Chickpea"}, "reasons": []}]
+    llm_crops = [{"id": "chickpea", "reason": "कमी पाण्यात येतो.", "risk": "कमी पाण्यात येतो."}]
+    result = main._apply_crop_validator(llm_crops, recs, "mr")
+    chickpea = result[0]
+    assert chickpea["source"] == "llm"
+    assert chickpea["reason"] == "कमी पाण्यात येतो."
+    assert chickpea["risk"] == main._crop_reason_text("not_verified", "mr")
+
+
+def test_crop_validator_keeps_risk_when_different_from_reason():
+    recs = [{"id": "chickpea", "names": {"en": "Chickpea"}, "reasons": []}]
+    llm_crops = [{"id": "chickpea", "reason": "कमी पाण्यात येतो.", "risk": "किडीचा धोका कमी."}]
+    result = main._apply_crop_validator(llm_crops, recs, "mr")
+    chickpea = result[0]
+    assert chickpea["risk"] == "किडीचा धोका कमी."
+
+
 def test_llm_reply_in_english_falls_back_for_that_crop_when_mr_requested():
     # Reproduces the production bug: Nemotron answered wheat in English
     # despite language=mr, while getting chickpea right.

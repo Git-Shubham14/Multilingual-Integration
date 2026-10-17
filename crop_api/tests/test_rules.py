@@ -55,6 +55,36 @@ FAKE_RULES = [
         "source": ["test"],
         "verified": True,
     },
+    {
+        "id": "groundnut",
+        "names": {"en": "Groundnut", "mr": "भुईमूग", "hi": "मूंगफली", "reviewed": False},
+        "season": "kharif",
+        "talukas": "all",
+        "sowing_months": None,
+        "irrigation": "rainfed",
+        "soil_types": None,
+        "ph_min": None,
+        "ph_max": None,
+        "avoid_after": None,
+        "good_after": None,
+        "source": ["test"],
+        "verified": False,
+    },
+    {
+        "id": "chickpea",
+        "names": {"en": "Chickpea", "mr": "हरभरा", "hi": "चना", "reviewed": False},
+        "season": "rabi",
+        "talukas": "all",
+        "sowing_months": None,
+        "irrigation": "rainfed",
+        "soil_types": None,
+        "ph_min": None,
+        "ph_max": None,
+        "avoid_after": None,
+        "good_after": None,
+        "source": ["test"],
+        "verified": False,
+    },
 ]
 
 
@@ -107,8 +137,10 @@ def test_ph_soft_rule_lowers_score():
 
 
 def test_good_after_bonus_raises_score():
-    after_maize = recommend("Dindori", 1, "yes", "maize", rules=FAKE_RULES)
-    after_nothing = recommend("Dindori", 1, "yes", None, rules=FAKE_RULES)
+    # month 10 -- onion_rabi has no sowing_months of its own, but season
+    # "rabi" puts it inside the season-window hard rule (9, 10, 11).
+    after_maize = recommend("Dindori", 10, "yes", "maize", rules=FAKE_RULES)
+    after_nothing = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
 
     onion_after_maize = next(r for r in after_maize if r["id"] == "onion_rabi")
     onion_after_nothing = next(r for r in after_nothing if r["id"] == "onion_rabi")
@@ -118,9 +150,9 @@ def test_good_after_bonus_raises_score():
 
 
 def test_sowing_unknown_reason_when_months_null():
-    # onion_rabi has sowing_months=None, so any month should keep it and
-    # flag the reason, instead of silently passing the sowing-month check.
-    results = recommend("Dindori", 5, "yes", None, rules=FAKE_RULES)
+    # onion_rabi has sowing_months=None and season "rabi" (season window
+    # 9, 10, 11), so month 10 keeps it and should still flag the reason.
+    results = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
     onion = next(r for r in results if r["id"] == "onion_rabi")
     assert any(r["code"] == "sowing_unknown" for r in onion["reasons"])
 
@@ -159,8 +191,11 @@ def test_null_fields_are_skipped_not_treated_as_failure():
 
 
 def test_max_three_results():
+    # month 10 -- FAKE_RULES[2] (onion_rabi) needs it to pass the season
+    # window hard rule (season "rabi" -> 9, 10, 11), so the cap is actually
+    # exercised instead of every copy being dropped.
     many_rules = [dict(FAKE_RULES[2], id=f"crop{i}") for i in range(5)]
-    results = recommend("Dindori", 1, "yes", None, rules=many_rules)
+    results = recommend("Dindori", 10, "yes", None, rules=many_rules)
     assert len(results) <= 3
 
 
@@ -177,9 +212,47 @@ def test_result_includes_names_and_sowing_months():
 
 
 def test_result_sowing_months_is_none_when_unverified():
-    results = recommend("Dindori", 5, "yes", None, rules=FAKE_RULES)
+    # month 10 -- must stay inside onion_rabi's season window (see above).
+    results = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
     onion = next(r for r in results if r["id"] == "onion_rabi")
     assert onion["sowing_months"] is None
+
+
+def test_season_window_hard_rule_drops_kharif_crop_outside_window():
+    # groundnut: sowing_months=None, season="kharif" -> window 6, 7, 8.
+    # October (10) is outside it, so it must not be suggested.
+    results = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
+    ids = [r["id"] for r in results]
+    assert "groundnut" not in ids
+
+
+def test_season_window_hard_rule_allows_rabi_crop_inside_window():
+    # chickpea: sowing_months=None, season="rabi" -> window 9, 10, 11.
+    # October (10) is inside it, so it must be allowed.
+    results = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
+    ids = [r["id"] for r in results]
+    assert "chickpea" in ids
+
+
+def test_season_window_hard_rule_allows_kharif_crop_inside_window():
+    # Same groundnut crop, but June (6) is inside its kharif window.
+    results = recommend("Dindori", 6, "yes", None, rules=FAKE_RULES)
+    ids = [r["id"] for r in results]
+    assert "groundnut" in ids
+
+
+def test_season_window_reason_added_when_season_known():
+    results = recommend("Dindori", 10, "yes", None, rules=FAKE_RULES)
+    chickpea = next(r for r in results if r["id"] == "chickpea")
+    assert any(r["code"] == "season_window" for r in chickpea["reasons"])
+
+
+def test_season_window_reason_not_added_when_season_unknown():
+    # bajra has sowing_months=[6, 7] (not null), so the season-window
+    # estimate never applies to it and the reason must not appear.
+    results = recommend("Dindori", 6, "yes", None, rules=FAKE_RULES)
+    bajra = next(r for r in results if r["id"] == "bajra")
+    assert not any(r["code"] == "season_window" for r in bajra["reasons"])
 
 
 def test_onion_split_in_real_data():

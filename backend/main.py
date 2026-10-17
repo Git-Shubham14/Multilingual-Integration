@@ -864,7 +864,9 @@ CROP_LLM_TOTAL_TIMEOUT = float(os.getenv("CROP_LLM_TOTAL_TIMEOUT", "10"))
 CROP_LLM_MAX_TOKENS = int(os.getenv("CROP_LLM_MAX_TOKENS", "900"))
 
 CROP_MESSAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "crop_messages.json")
+MR_WORD_FIXES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "mr_word_fixes.json")
 _crop_messages: Optional[dict] = None
+_mr_word_fixes: Optional[dict] = None
 _crop_llm_client_instance: Optional[AsyncOpenAI] = None
 
 CROP_LLM_SYSTEM_PROMPT = (
@@ -876,7 +878,12 @@ CROP_LLM_SYSTEM_PROMPT = (
     "short sentences. Never mention pesticide or fertilizer names or "
     "amounts, yields, prices, profit, or success chances. Do not quote "
     "humidity or temperature numbers. If unsure, say to confirm with the "
-    "local KVK."
+    "local KVK. Do not mention any months or dates; the app shows the "
+    "sowing months separately. The evidence comes from a drought "
+    "contingency plan. Mention drought advice only if the weather shows a "
+    "dry spell. Do not copy table fragments like 'No rabi crop'. Risk must "
+    "be different from reason. If a crop's data is not verified, write one "
+    "short reason and say in the risk to confirm with KVK."
 )
 
 # Pesticide/chemical words the LLM must never use (copied from
@@ -922,22 +929,26 @@ def _crop_text_is_unsafe(text: str) -> bool:
     return bool(_CROP_DOSE_PRICE_PATTERN.search(text))
 
 
-_LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
-_DEVANAGARI_LETTER_PATTERN = re.compile(r"[ऀ-ॿ]")
+_LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]+")
+# The only Latin-letter words allowed in an mr/hi reply -- both are proper
+# nouns with no Devanagari form the farmer would recognize (Krishi Vigyan
+# Kendra, Indian Council of Agricultural Research), and CROP_LLM_SYSTEM_PROMPT
+# itself tells the LLM to point to "the local KVK".
+_ALLOWED_LATIN_WORDS = {"KVK", "ICAR"}
 
 
 def _crop_text_is_wrong_language(text: str, language: str) -> bool:
-    """True if `language` is mr/hi but `text` is mostly Latin letters — the
-    LLM answered in English despite CROP_LLM_SYSTEM_PROMPT's "Write only in
-    Devanagari script" instruction (seen in practice: Nemotron sometimes
-    writes one crop's reason/risk in English while getting the others
-    right). A farmer reading mr/hi should never see this, so it is treated
-    the same as unsafe content and replaced with the fallback text."""
+    """True if `language` is mr/hi but `text` contains any Latin-letter word
+    other than KVK/ICAR -- the LLM answered in English, or mixed English
+    into a Devanagari word (seen in practice: Nemotron wrote "विशेषज्ञanci",
+    a Devanagari word with an English suffix glued on). Checking for any
+    disallowed Latin run catches this even though count-based "mostly
+    English" checks would miss it. A farmer reading mr/hi should never see
+    this, so it is treated the same as unsafe content and replaced with the
+    fallback text."""
     if language not in ("mr", "hi") or not text:
         return False
-    latin = len(_LATIN_LETTER_PATTERN.findall(text))
-    devanagari = len(_DEVANAGARI_LETTER_PATTERN.findall(text))
-    return latin > devanagari
+    return any(word.upper() not in _ALLOWED_LATIN_WORDS for word in _LATIN_WORD_PATTERN.findall(text))
 
 
 def _load_crop_messages() -> dict:
@@ -959,6 +970,59 @@ def _crop_reason_text(code: str, language: str) -> str:
     if not entry:
         return ""
     return entry.get(language) or entry.get("en", "")
+
+
+def _load_mr_word_fixes() -> dict:
+    """Load backend/data/mr_word_fixes.json once and cache it in memory."""
+    global _mr_word_fixes
+    if _mr_word_fixes is None:
+        with open(MR_WORD_FIXES_PATH, encoding="utf-8") as f:
+            _mr_word_fixes = json.load(f)["fixes"]
+    return _mr_word_fixes
+
+
+# Punctuation trimmed off each end of a token before comparing it to
+# mr_word_fixes.json's keys -- a plain space-split, not a \b-based regex,
+# because Devanagari dependent vowel signs (matras) are combining marks
+# that Python's \w does not count as word characters, so \bword\b would
+# split in the middle of a word like "बुवाई".
+_MR_WORD_FIX_TRIM = ".,;:!?।\"'()[]{}…“”‘’"
+
+# Marathi grammatical suffixes the crop LLM sometimes glues straight onto a
+# Hindi word instead of leaving a space, e.g. "अक्टूबरमध्ये" (अक्टूबर +
+# मध्ये) or "रबीच्या" (रबी + च्या). Checked only when the token's core isn't
+# an exact match in mr_word_fixes.json on its own.
+_MR_WORD_FIX_SUFFIXES = ("मध्ये", "साठी", "च्या", "नंतर", "पर्यंत", "ची", "चा", "चे", "ला", "त")
+
+
+def _apply_mr_word_fixes(text: str) -> str:
+    """Replace whole Hindi words the crop LLM sometimes uses with the
+    correct Marathi word (e.g. सितंबर -> सप्टेंबर), only ever called for
+    language=mr. Matches a standalone space-separated token with its
+    surrounding punctuation stripped, never a substring of a longer word --
+    except for a Marathi suffix from _MR_WORD_FIX_SUFFIXES glued directly
+    onto the end of a known Hindi word, which is also fixed in place."""
+    if not text:
+        return text
+    fixes = _load_mr_word_fixes()
+
+    def _fix_token(token: str) -> str:
+        core = token.strip(_MR_WORD_FIX_TRIM)
+        if not core:
+            return token
+        start = token.find(core)
+        prefix, trailing = token[:start], token[start + len(core):]
+
+        if core in fixes:
+            return prefix + fixes[core] + trailing
+
+        for key, replacement in fixes.items():
+            if core.startswith(key) and core[len(key):] in _MR_WORD_FIX_SUFFIXES:
+                return prefix + replacement + core[len(key):] + trailing
+
+        return token
+
+    return " ".join(_fix_token(tok) for tok in text.split(" "))
 
 
 def _crop_display_name(rec: dict, language: str) -> str:
@@ -1119,6 +1183,13 @@ def _apply_crop_validator(llm_crops: list, recommendations: list, language: str)
         elif _crop_text_is_wrong_language(reason, language) or _crop_text_is_wrong_language(risk, language):
             validated_by_id[cid] = _fallback_crop_entry(rec_by_id[cid], language, "wrong_language")
         else:
+            if language == "mr":
+                reason = _apply_mr_word_fixes(reason)
+                risk = _apply_mr_word_fixes(risk)
+            if risk == reason:
+                # The LLM repeated the reason as the risk instead of giving
+                # a real one -- keep the reason, replace only the risk.
+                risk = _crop_reason_text("not_verified", language)
             validated_by_id[cid] = {
                 "id": cid, "reason": reason, "risk": risk,
                 "source": "llm", "fallback_reason": None,
@@ -1255,6 +1326,14 @@ async def crop_check(request: CropRequest):
 
     language_name = LANGUAGE_NAMES.get(lang, "English")
     crop_system_prompt = CROP_LLM_SYSTEM_PROMPT.format(language=language_name)
+    if lang == "mr":
+        crop_system_prompt += (
+            " Use common Marathi farming words, for example पेरणी for "
+            "sowing (not बुवाई). Use Marathi month names and words, not "
+            "Hindi. Example of the expected style: "
+            '{"id":"chickpea","reason":"ऑक्टोबरमध्ये पेरणीसाठी योग्य पीक आहे.",'
+            '"risk":"पाणी कमी असल्यास उत्पादन कमी होऊ शकते."}'
+        )
     if lang in ("mr", "hi"):
         crop_system_prompt += (
             " Write only in Devanagari script. Do not use English letters. "
@@ -1291,15 +1370,21 @@ async def crop_check(request: CropRequest):
     per_crop_log = []
     for rec in recommendations:
         v = validated_by_id[rec["id"]]
+        seen_evidence = set()
+        evidence_refs = []
+        for e in rec.get("evidence") or []:
+            key = (e.get("page"), e.get("section"))
+            if key in seen_evidence:
+                continue
+            seen_evidence.add(key)
+            evidence_refs.append({"page": e.get("page"), "section": e.get("section")})
         final_crops.append({
             "id": rec["id"],
             "name": _crop_display_name(rec, lang),
             "reason": v["reason"],
             "risk": v["risk"],
             "sowing_months": rec.get("sowing_months"),
-            "evidence_refs": [
-                {"page": e.get("page"), "section": e.get("section")} for e in rec.get("evidence") or []
-            ],
+            "evidence_refs": evidence_refs,
         })
         tag = v["source"] if v["source"] == "llm" else f"fallback({v['fallback_reason']})"
         per_crop_log.append(f"{rec['id']}={tag}")

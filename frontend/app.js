@@ -1398,6 +1398,7 @@ const CropI18n = (() => {
     soilType:     { mr: "जमिनीचा प्रकार", hi: "मिट्टी का प्रकार", en: "Soil type" },
     previousCrop: { mr: "मागील पीक", hi: "पिछली फसल", en: "Previous crop" },
     none:         { mr: "काहीही नाही", hi: "कोई नहीं", en: "None" },
+    notSure:      { mr: "माहीत नाही", hi: "पता नहीं", en: "Not sure" },
     soilCard:     { mr: "माती आरोग्य पत्रिका मूल्ये (पर्यायी)", hi: "मृदा स्वास्थ्य कार्ड मूल्य (वैकल्पिक)", en: "Soil Health Card values (optional)" },
     ph:           { mr: "pH", hi: "pH", en: "pH" },
     ec:           { mr: "EC (dS/m)", hi: "EC (dS/m)", en: "EC (dS/m)" },
@@ -1502,6 +1503,8 @@ const CropAdvisorModal = (() => {
     _populateSelect(_soilTypeSelect, options.soil_types || [], {
       valueKey: (s) => s.id,
       labelFn: (s) => _localized(s, lang),
+      includeNone: true,
+      noneLabel: labels.notSure,
     });
     _populateSelect(_prevCropSelect, options.crops || [], {
       valueKey: (c) => c.id,

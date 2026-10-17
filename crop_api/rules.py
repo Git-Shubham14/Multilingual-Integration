@@ -16,6 +16,11 @@ MAX_RESULTS = 3
 # ICAR 2011 sec 2.1.1: less than 2.5 mm rain over 2 weeks counts as a dry spell.
 DRY_SPELL_RAIN_MM = 2.5
 
+# Estimate used only when a crop's own sowing_months is null but its season
+# is known: ICAR 2011 sec 1.12's general kharif/rabi sowing windows, not a
+# value stated per crop -- see crop_api/data/SOURCES.md.
+SEASON_SOWING_WINDOWS = {"kharif": [6, 7, 8], "rabi": [9, 10, 11]}
+
 
 def load_rules(path=DEFAULT_RULES_FILE):
     with open(path, encoding="utf-8") as f:
@@ -37,7 +42,11 @@ def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_t
             continue
 
         sowing_months = crop.get("sowing_months")
-        if sowing_months is not None and sowing_month not in sowing_months:
+        season_window = None
+        if sowing_months is None:
+            season_window = SEASON_SOWING_WINDOWS.get(crop.get("season"))
+        effective_sowing_months = sowing_months if sowing_months is not None else season_window
+        if effective_sowing_months is not None and sowing_month not in effective_sowing_months:
             continue
 
         if crop.get("irrigation") == "required" and irrigation == "no":
@@ -66,6 +75,11 @@ def recommend(taluka, sowing_month, irrigation, previous_crop, soil=None, soil_t
 
         if sowing_months is None:
             reasons.append({"code": "sowing_unknown", "text": "Sowing window not verified"})
+            if season_window is not None:
+                reasons.append({
+                    "code": "season_window",
+                    "text": "Sowing month estimated from season",
+                })
 
         good_after = crop.get("good_after")
         if good_after is not None and previous_crop in good_after:

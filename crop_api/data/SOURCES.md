@@ -30,6 +30,17 @@ Still needed (tracked in the main `CLAUDE.md`): Soil Health Card data for
 pH ranges, taluka-level breakdowns, and verification of the other 8 crops'
 sowing windows.
 
+### Season sowing window (estimate, not a per-crop ICAR value)
+
+When a crop's `sowing_months` is null but its `season` is known (kharif or
+rabi), `rules.py`'s `SEASON_SOWING_WINDOWS` uses a hard rule instead:
+kharif = months 6, 7, 8; rabi = months 9, 10, 11. This is **our estimate**
+based on the ICAR plan's general kharif/rabi sowing windows (sec 1.12), not
+a sowing window stated for that specific crop. A crop dropped or kept by
+this rule gets a `season_window` reason so the farmer-facing text can say
+the month was estimated, not confirmed. Crops with `season: null` (cabbage,
+sugarcane, grape, pomegranate, tomato) get no hard rule from this at all.
+
 ## Open-Meteo (weather + geocoding)
 
 - Service: Open-Meteo, https://open-meteo.com -- free, no API key needed.
