@@ -65,9 +65,33 @@ The frontend never calls port 5002 directly. The backend forwards the request.
 - Needs `HF_TOKEN` and `NVIDIA_API_KEY` in `backend/.env`. Free tiers can be rate-limited or queued.
 - Still to check: end-to-end speed (not yet measured); local-mode AI4Bharat pipeline.
 
-## Crop recommendation (to build later)
-- Genuine dataset only. 14 target crops: Pearl millet, Wheat, Maize, Onion, Chickpea, Cabbage/Cauliflower, Paddy, Groundnut, Finger millet, Soybean, Sugarcane, Grape, Pomegranate, Tomato.
-- Planned sources: Soil Health Card data for Maharashtra (dataful.in), ICAR District Agricultural Contingency Plan for Nashik, MPKV Agromet bulletins. Verify availability first.
+## Module 2 – Crop Recommendation (status)
+- `crop_api/` (Flask, port 5003): rule-based recommendations from the ICAR Nashik 2011
+  District Agricultural Contingency Plan (15 crops, 7 verified so far), filtered by
+  soil type (light/medium/heavy) and season window; weather + dry-spell check from the
+  free Open-Meteo API; BM25 retrieval (RAG) over chunks of the ICAR PDF for the
+  explanation text, with pesticide-dose pages deliberately excluded from the chunk set.
+- `backend` `/api/crop` and `/api/crop/options`: ask Nemotron (Super model first, Ultra
+  as backup, 10 s time limit) to turn the rule output into a short explanation, then run
+  it through a validator that rejects unknown crop ids, pesticide doses/quantities,
+  pesticide-related words, wrong-language output, or a `risk` field that just repeats
+  `reason`. Marathi has an extra word-fix list for common mistranslations. If Nemotron
+  fails or is rejected, the API falls back to the plain rules output (no LLM text).
+- `frontend`: new "🌾 Crop Advisor" form and result card, with mr/hi/en labels from a
+  `CropI18n` table. Tap the 🔊 icon to hear the result via the existing TTS pipeline.
+  `sw.js` cache bumped to v7 so the PWA picks up the new screen.
+- Run order (4 terminals now): `crop_api` (port 5003) and `disease_api` (port 5002) first,
+  then `backend` (`start.bat`, port 8000), then `frontend` (port 3000). Restart `crop_api`
+  and `backend` after editing their code — neither auto-reloads.
+- Next planned: try Sarvam AI's `sarvam-105b` model for Marathi/Hindi crop explanations
+  and chat answers, with Nemotron kept as the fallback, plus a daily request cap once
+  that's wired in. Still genuine-dataset-only for the underlying rules; still never
+  commit `backend/.env`.
+- Original target list for a future, fuller dataset-based version (not yet reached): 14
+  crops — Pearl millet, Wheat, Maize, Onion, Chickpea, Cabbage/Cauliflower, Paddy,
+  Groundnut, Finger millet, Soybean, Sugarcane, Grape, Pomegranate, Tomato. Planned
+  sources: Soil Health Card data for Maharashtra (dataful.in), MPKV Agromet bulletins.
+  Verify availability first.
 
 ## Git and safety rules
 - Work on the branch `integration`. Never push to `main` or to a remote without asking Shubham.
@@ -75,10 +99,11 @@ The frontend never calls port 5002 directly. The backend forwards the request.
 - Do not delete or rewrite existing features. Keep Aditya's code style.
 - Do not start long-running servers yourself. Tell Shubham the command and let him run each server in its own terminal.
 
-## Run everything (three terminals)
-1. `cd backend` then `start.bat` (port 8000)
+## Run everything (four terminals)
+1. `cd crop_api` then `python app.py` (port 5003)
 2. `cd disease_api` then `python app.py` (port 5002)
-3. `npx serve frontend` or `python -m http.server 3000 --directory frontend` (port 3000), open http://localhost:3000 in Chrome or Edge
+3. `cd backend` then `start.bat` (port 8000)
+4. `npx serve frontend` or `python -m http.server 3000 --directory frontend` (port 3000), open http://localhost:3000 in Chrome or Edge
 
 ## Still needed for the report
 - Sources and licences of the maize, onion and cotton datasets; expert check of Iris yellow virus labels; a real-world photo test; update slides to say Nashik district; pomegranate as future work.
