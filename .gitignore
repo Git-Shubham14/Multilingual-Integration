@@ -10,3 +10,4 @@ venv_old/
 disease_api/model/
 backend/scripts/compare_out.csv
 backend/data/sarvam_usage.json
+report_evidence/
