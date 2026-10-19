@@ -93,6 +93,29 @@ The frontend never calls port 5002 directly. The backend forwards the request.
   sources: Soil Health Card data for Maharashtra (dataful.in), MPKV Agromet bulletins.
   Verify availability first.
 
+## Crop LLM provider (Sarvam, added 2026-10-19)
+- `/api/crop` now tries Sarvam's `sarvam-105b` first for mr/hi (`backend/models/sarvam_client.py`),
+  with a strict JSON schema (one `{id, reason, risk}` per crop, ids restricted to that
+  request's crop_api recommendations) and `reasoning_effort` always `None` (sarvam-105b
+  otherwise "thinks" and returns an empty answer). Fallback chain: Sarvam -> Nemotron ->
+  rules text. English always goes straight to Nemotron (`pick_provider()` in `backend/main.py`).
+- Whole mr/hi chain capped at 12 s total: Sarvam gets up to 6 s, Nemotron then gets
+  whatever's left, never less than 3 s. Daily request cap 300, counted in
+  `backend/data/sarvam_usage.json` (git-ignored, resets at IST midnight). Every fallback
+  is logged with its reason (timeout / bad JSON / cap reached / HTTP error + status / not
+  configured).
+- `backend/tests/conftest.py` disables `SARVAM_API_KEY` and redirects the usage-counter file
+  for every backend test, so running the test suite never burns real Sarvam quota even
+  though `backend/.env` has a real key for the comparison scripts below.
+- Comparison scripts (`backend/scripts/compare_pipelines.py`, `compare_chat_b2.py`,
+  `debug_crop_c.py`, `check_sarvam.py`) tried pipeline A (Nemotron direct), B (translate
+  round-trip), C (Sarvam direct), and B2 (Nemotron answers in English, Sarvam rewrites to
+  mr/hi). Result: chat's best pipeline is B2, but that is **not yet wired into `/api/chat`**
+  (still Nemotron-only `CHAT_MODE=direct`); crop's and disease's best pipeline is C (Sarvam
+  direct). Crop is wired in as above; disease still only uses the fixed-template
+  `/api/disease` route (never freeform LLM text, per the disease-names rule above) -- the
+  disease result is for the report, not yet implemented.
+
 ## Git and safety rules
 - Work on the branch `integration`. Never push to `main` or to a remote without asking Shubham.
 - Never print, log, commit or paste API keys. `.env`, `venv/` and `disease_api/model/` stay out of git.

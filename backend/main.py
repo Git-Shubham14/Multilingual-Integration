@@ -46,6 +46,12 @@ from models.asr import transcribe_marathi
 from models.translation import translate, translate_marathi_to_english, translate_english_to_marathi
 from models.tts import synthesize_marathi_speech
 from models.db import init_db, create_chat, get_chats, get_chat_messages, add_message, delete_chat
+from models.sarvam_client import (
+    sarvam_chat,
+    SarvamCapReachedError,
+    SarvamHTTPError,
+    SarvamNotConfiguredError,
+)
 from utils.text_cleaner import clean_for_translation
 
 # ─── LLM Config ───────────────────────────────────────────────────────────────
@@ -401,6 +407,10 @@ class CropResponse(BaseModel):
     disclaimer: str
     # Only set for the no-recommendations case (crops is then empty).
     message: Optional[str] = None
+    # Which LLM actually produced "crops" when source=="llm" ("sarvam" or
+    # "nemotron"); None for source=="rules". For logs/debug only -- the
+    # frontend doesn't need to show this.
+    provider: Optional[str] = None
 
 
 class CreateChatRequest(BaseModel):
@@ -844,6 +854,20 @@ async def chat(request: ChatRequest):
     )
 
 
+def pick_provider(module: str, lang: str) -> str:
+    """Which LLM backend should answer this request.
+
+    Rule for now: English always uses Nemotron (Sarvam is untested for
+    English farmer answers); crop mr/hi uses Sarvam unless CROP_LLM_PROVIDER
+    switches it off. Other modules (chat) aren't routed through Sarvam yet.
+    """
+    if lang == "en":
+        return "nemotron"
+    if module == "crop" and CROP_LLM_PROVIDER == "nemotron":
+        return "nemotron"
+    return "sarvam"
+
+
 # ─── Crop recommendation (forwards to Shubham's crop_api, explained by Nemotron) ──
 
 CROP_API_URL = os.getenv("CROP_API_URL", "http://127.0.0.1:5003")
@@ -862,6 +886,19 @@ CROP_LLM_TOTAL_TIMEOUT = float(os.getenv("CROP_LLM_TOTAL_TIMEOUT", "10"))
 # English, and a cut-off reply can silently drop the later crops from the
 # JSON (or make it invalid) just as easily as a real LLM error would.
 CROP_LLM_MAX_TOKENS = int(os.getenv("CROP_LLM_MAX_TOKENS", "900"))
+# "sarvam" (default) tries Sarvam's sarvam-105b first for mr/hi, falling back
+# to Nemotron; "nemotron" switches Sarvam off entirely (e.g. once the daily
+# free-tier cap is a concern, or to compare against the old behaviour).
+CROP_LLM_PROVIDER = os.getenv("CROP_LLM_PROVIDER", "sarvam")
+# For mr/hi, the whole Sarvam->Nemotron chain is capped at this many seconds
+# total (SARVAM_TIMEOUT_S already caps Sarvam's own share, default 6s).
+# Nemotron then gets whatever's left of this budget, down to
+# CROP_LLM_MIN_FALLBACK_TIMEOUT_S -- never less, so a near-exhausted budget
+# still gives Nemotron a real chance instead of failing instantly. English
+# (Nemotron only, no Sarvam) is unaffected and keeps using
+# CROP_LLM_TOTAL_TIMEOUT above.
+CROP_PROVIDER_TOTAL_TIMEOUT_S = float(os.getenv("CROP_PROVIDER_TOTAL_TIMEOUT_S", "12"))
+CROP_LLM_MIN_FALLBACK_TIMEOUT_S = float(os.getenv("CROP_LLM_MIN_FALLBACK_TIMEOUT_S", "3"))
 
 CROP_MESSAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "crop_messages.json")
 MR_WORD_FIXES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "mr_word_fixes.json")
@@ -1078,17 +1115,19 @@ async def _cancel_and_drain(tasks: list) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _crop_llm_complete(messages: list) -> str:
+async def _crop_llm_complete(messages: list, total_timeout: Optional[float] = None) -> str:
     """Hedged Nemotron call for /api/crop: ask CROP_LLM_MODEL first; if it
     hasn't answered within CROP_LLM_HEDGE_AFTER seconds, also ask
     CROP_LLM_FALLBACK_MODEL and use whichever answers first (same hedge
     pattern as _chat_direct, but its own models, timing, and client —
     /api/chat's hedge is untouched). The whole call is capped at
-    CROP_LLM_TOTAL_TIMEOUT seconds total; raises asyncio.TimeoutError past
-    that, which the caller treats as a fallback. Whatever happens (a model
-    wins, both fail, or the total timeout fires), every task this call
-    created is cancelled and drained before returning — see
-    _cancel_and_drain."""
+    `total_timeout` seconds (default CROP_LLM_TOTAL_TIMEOUT) -- the mr/hi
+    path passes a smaller value here when Sarvam already used up part of
+    CROP_PROVIDER_TOTAL_TIMEOUT_S, so Nemotron only gets what's left of the
+    12s chain budget. Raises asyncio.TimeoutError past that, which the
+    caller treats as a fallback. Whatever happens (a model wins, both fail,
+    or the total timeout fires), every task this call created is cancelled
+    and drained before returning — see _cancel_and_drain."""
     client = _get_crop_llm_client()
     all_tasks: list[asyncio.Task] = []
 
@@ -1126,10 +1165,80 @@ async def _crop_llm_complete(messages: list) -> str:
         return completion
 
     try:
-        completion = await asyncio.wait_for(hedge(), timeout=CROP_LLM_TOTAL_TIMEOUT)
+        completion = await asyncio.wait_for(hedge(), timeout=total_timeout if total_timeout is not None else CROP_LLM_TOTAL_TIMEOUT)
         return (completion.choices[0].message.content or "").strip()
     finally:
         await _cancel_and_drain(all_tasks)
+
+
+def _crop_sarvam_response_format(rec_ids: list) -> dict:
+    """Strict JSON schema for Sarvam's response_format: exactly one
+    {id, reason, risk} entry per crop_api recommendation, id restricted to
+    this request's ids. Forces one object per crop instead of the merged/
+    truncated JSON sarvam-105b produced with a plain-text prompt (seen in
+    backend/scripts/debug_crop_c.txt: duplicate "id" keys overwrote earlier
+    crops into one object, and a trailing comma broke the parse)."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "crop_recommendations",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "crops": {
+                        "type": "array",
+                        "minItems": len(rec_ids),
+                        "maxItems": len(rec_ids),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "enum": rec_ids},
+                                "reason": {"type": "string"},
+                                "risk": {"type": "string"},
+                            },
+                            "required": ["id", "reason", "risk"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["crops"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+async def _crop_try_sarvam(messages: list, rec_ids: list) -> Optional[str]:
+    """Try Sarvam for the crop explanation. Returns the raw JSON text on
+    success (already checked to parse with a "crops" list), or None -- after
+    logging exactly why -- so the caller falls back to Nemotron."""
+    response_format = _crop_sarvam_response_format(rec_ids)
+    try:
+        raw_text = await sarvam_chat(messages, response_format=response_format, max_tokens=CROP_LLM_MAX_TOKENS)
+    except SarvamNotConfiguredError:
+        logger.info("Crop LLM fallback sarvam->nemotron (reason=not_configured)")
+        return None
+    except SarvamCapReachedError as e:
+        logger.warning("Crop LLM fallback sarvam->nemotron (reason=cap_reached): %s", e)
+        return None
+    except SarvamHTTPError as e:
+        logger.warning(
+            "Crop LLM fallback sarvam->nemotron (reason=http_error status=%s): %s",
+            e.status_code, e.body[:300],
+        )
+        return None
+    except httpx.TimeoutException:
+        logger.warning("Crop LLM fallback sarvam->nemotron (reason=timeout)")
+        return None
+    except Exception as e:
+        logger.warning("Crop LLM fallback sarvam->nemotron (reason=error): %s", e)
+        return None
+
+    if _parse_llm_crops_json(_strip_code_fence(raw_text)) is None:
+        logger.warning("Crop LLM fallback sarvam->nemotron (reason=bad_json)")
+        return None
+    return raw_text
 
 
 def _strip_code_fence(text: str) -> str:
@@ -1344,25 +1453,54 @@ async def crop_check(request: CropRequest):
         {"role": "user", "content": user_content},
     ]
 
+    rec_ids = [r["id"] for r in recommendations]
+    provider = pick_provider("crop", lang)
+
     source = "rules"
     validated = None
+    provider_used = None
+    parsed = None
     llm_ms = 0
+    nemotron_timeout_used = CROP_LLM_TOTAL_TIMEOUT
     t0 = time.perf_counter()
     try:
-        raw_text = await _crop_llm_complete(messages)
+        if provider == "sarvam":
+            sarvam_text = await _crop_try_sarvam(messages, rec_ids)
+            if sarvam_text is not None:
+                parsed = _parse_llm_crops_json(_strip_code_fence(sarvam_text))
+                provider_used = "sarvam"
+
+            if parsed is None:
+                # Sarvam already spent part of the 12s chain budget; give
+                # Nemotron only what's left of it (never less than
+                # CROP_LLM_MIN_FALLBACK_TIMEOUT_S).
+                elapsed = time.perf_counter() - t0
+                nemotron_timeout_used = max(
+                    CROP_PROVIDER_TOTAL_TIMEOUT_S - elapsed, CROP_LLM_MIN_FALLBACK_TIMEOUT_S
+                )
+                raw_text = await _crop_llm_complete(messages, total_timeout=nemotron_timeout_used)
+                parsed = _parse_llm_crops_json(_strip_code_fence(raw_text))
+                if parsed is not None:
+                    provider_used = "nemotron"
+        else:
+            raw_text = await _crop_llm_complete(messages)
+            parsed = _parse_llm_crops_json(_strip_code_fence(raw_text))
+            if parsed is not None:
+                provider_used = "nemotron"
+
         llm_ms = round((time.perf_counter() - t0) * 1000)
-        parsed = _parse_llm_crops_json(_strip_code_fence(raw_text))
         if parsed is not None:
             validated = _apply_crop_validator(parsed, recommendations, lang)
             source = "llm"
     except asyncio.TimeoutError:
         llm_ms = round((time.perf_counter() - t0) * 1000)
-        logger.warning("Crop LLM timed out after %.1fs; using rules fallback", CROP_LLM_TOTAL_TIMEOUT)
+        logger.warning("Crop LLM: Nemotron timed out after %.1fs; using rules fallback", nemotron_timeout_used)
     except Exception as e:
         llm_ms = round((time.perf_counter() - t0) * 1000)
         logger.warning("Crop LLM failed (%s); using rules fallback", e)
 
     if validated is None:
+        provider_used = None
         validated = _apply_crop_validator([], recommendations, lang)
 
     validated_by_id = {c["id"]: c for c in validated}
@@ -1390,7 +1528,10 @@ async def crop_check(request: CropRequest):
         per_crop_log.append(f"{rec['id']}={tag}")
 
     total_ms = round((time.perf_counter() - t_total_start) * 1000)
-    logger.info("Crop timings (ms): crop_api=%s llm=%s total=%s", crop_api_ms, llm_ms, total_ms)
+    logger.info(
+        "Crop timings (ms): crop_api=%s llm=%s total=%s provider=%s",
+        crop_api_ms, llm_ms, total_ms, provider_used or "none",
+    )
     logger.info("Crop per-crop source: %s", ", ".join(per_crop_log))
 
     return CropResponse(
@@ -1399,6 +1540,7 @@ async def crop_check(request: CropRequest):
         crops=final_crops,
         weather=weather,
         disclaimer=_crop_message("disclaimer", lang),
+        provider=provider_used,
     )
 
 
