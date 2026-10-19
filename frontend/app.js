@@ -1073,8 +1073,15 @@ const ChatUI = (() => {
    * Add the disease-check result bubble (bot side).
    * "ok": message + both guesses as "name (English name) — NN%".
    * "not_sure": only the message, no guesses.
+   *
+   * `labels` is DiseaseI18n's label object for the farmer's current
+   * language (causeLabel/todayLabel/preventLabel/speakTitle) — only needed
+   * when `result.explanation` is present (an actual, non-healthy disease).
+   * `onSpeak` is called (with the button element) when the 🔊 button on the
+   * explanation is tapped — on-tap only, same pattern as addCropResult,
+   * since cause+today+prevent together can be long.
    */
-  function addDiseaseResult(result) {
+  function addDiseaseResult(result, labels, onSpeak) {
     _hideWelcome();
     const msg = document.createElement("div");
     msg.className = "message bot";
@@ -1103,25 +1110,51 @@ const ChatUI = (() => {
       bubble.appendChild(guesses);
     }
 
-    if (Array.isArray(result.precautions) && result.precautions.length > 0) {
-      const precautionsEl = document.createElement("div");
-      precautionsEl.className = "disease-precautions";
+    // The precautions a farmer needs are always "what to do today" +
+    // "how to prevent it next time" — now shown as these two labeled
+    // sections (backed by the LLM explanation, or by the same checked
+    // precaution lines as a fallback) instead of one flat unlabeled list.
+    if (result.explanation) {
+      const explEl = document.createElement("div");
+      explEl.className = "disease-explanation";
 
-      const title = document.createElement("div");
-      title.className = "disease-precautions-title";
-      title.textContent = result.precautions_title || "Precautions";
-      precautionsEl.appendChild(title);
+      if (onSpeak) {
+        const speakRow = document.createElement("div");
+        speakRow.className = "disease-explanation-speak-row";
+        const speakBtn = document.createElement("button");
+        speakBtn.className = "disease-explanation-speak-btn";
+        speakBtn.type = "button";
+        speakBtn.innerHTML = "🔊";
+        speakBtn.title = (labels && labels.speakTitle) || "Tap to hear this";
+        speakBtn.setAttribute("aria-label", speakBtn.title);
+        speakBtn.addEventListener("click", () => onSpeak(speakBtn));
+        speakRow.appendChild(speakBtn);
+        explEl.appendChild(speakRow);
+      }
 
-      const list = document.createElement("ul");
-      list.className = "disease-precautions-list";
-      result.precautions.forEach((line) => {
-        const li = document.createElement("li");
-        li.textContent = line;
-        list.appendChild(li);
+      [
+        ["causeLabel", result.explanation.cause],
+        ["todayLabel", result.explanation.today],
+        ["preventLabel", result.explanation.prevent],
+      ].forEach(([labelKey, text]) => {
+        if (!text) return;
+        const section = document.createElement("div");
+        section.className = "disease-explanation-section";
+
+        const title = document.createElement("div");
+        title.className = "disease-explanation-title";
+        title.textContent = (labels && labels[labelKey]) || labelKey;
+        section.appendChild(title);
+
+        const textEl = document.createElement("div");
+        textEl.className = "disease-explanation-text";
+        textEl.textContent = text;
+        section.appendChild(textEl);
+
+        explEl.appendChild(section);
       });
-      precautionsEl.appendChild(list);
 
-      bubble.appendChild(precautionsEl);
+      bubble.appendChild(explEl);
     }
 
     body.appendChild(bubble);
@@ -1445,6 +1478,33 @@ const CropI18n = (() => {
   }
 
   return { t, monthName, getLabels };
+})();
+
+
+/* ─── Disease explanation labels (Sarvam Phase 2) ────────────
+   cause/today/prevent section titles for the disease result card, shown
+   with addDiseaseResult's explanation block (ChatUI). ───────────────── */
+const DiseaseI18n = (() => {
+  const STRINGS = {
+    causeLabel:   { mr: "हे काय आहे", hi: "यह क्या है", en: "What this is" },
+    todayLabel:   { mr: "आज काय करावे", hi: "आज क्या करें", en: "What to do today" },
+    preventLabel: { mr: "पुढील काळजी", hi: "आगे की सावधानी", en: "Prevention" },
+    speakTitle:   { mr: "ऐकण्यासाठी दाबा", hi: "सुनने के लिए दबाएँ", en: "Tap to hear this" },
+  };
+
+  function t(key, lang) {
+    const entry = STRINGS[key];
+    if (!entry) return key;
+    return entry[lang] || entry.en || key;
+  }
+
+  function getLabels(lang) {
+    const labels = {};
+    Object.keys(STRINGS).forEach((key) => { labels[key] = t(key, lang); });
+    return labels;
+  }
+
+  return { t, getLabels };
 })();
 
 
@@ -1851,6 +1911,9 @@ const App = (() => {
     if (_isProcessing) return;
     _isProcessing = true;
 
+    const lang = LanguageSelector.getLanguage();
+    const labels = DiseaseI18n.getLabels(lang);
+
     const thumbnailUrl = URL.createObjectURL(file);
     ChatUI.addUserPhoto(thumbnailUrl, crop);
     const loadingEl = ChatUI.addDiseaseLoading("Checking your leaf...");
@@ -1858,7 +1921,7 @@ const App = (() => {
     try {
       const result = await DiseaseCheck.checkDisease(file, crop);
       loadingEl.remove();
-      ChatUI.addDiseaseResult(result);
+      ChatUI.addDiseaseResult(result, labels, (speakBtn) => _speakDiseaseExplanation(result, lang, speakBtn));
       await _speakDiseaseMessage(result);
     } catch (err) {
       loadingEl.remove();
@@ -1997,6 +2060,42 @@ const App = (() => {
     } catch (err) {
       // Voice failed — the card's text is already showing, so just log it.
       console.warn("Could not speak crop advice:", err);
+    } finally {
+      speakBtn.disabled = false;
+      speakBtn.classList.remove("playing");
+    }
+  }
+
+  // ── Speak the disease explanation (cause/today/prevent) — on-tap only, ──
+  //    same reasoning as crop: this text is long, unlike the short disease
+  //    message, which is still spoken automatically by _speakDiseaseMessage.
+  function _buildDiseaseExplanationSpokenText(result) {
+    if (!result.explanation) return "";
+    return _joinSpokenParts([
+      result.explanation.cause,
+      result.explanation.today,
+      result.explanation.prevent,
+    ]);
+  }
+
+  async function _speakDiseaseExplanation(result, language, speakBtn) {
+    const text = _buildDiseaseExplanationSpokenText(result);
+    if (!text) return;
+
+    speakBtn.disabled = true;
+    speakBtn.classList.add("playing");
+    try {
+      const ttsResult = await API.textToSpeech(text, Config.get("voice"), language);
+      ChatUI.addTTSResult(
+        ttsResult.marathi_text,
+        ttsResult.word_timings,
+        ttsResult.audio_base64,
+        ttsResult.voice || Config.get("voice"),
+        ttsResult.duration || 3,
+      );
+    } catch (err) {
+      // Voice failed — the card's text is already showing, so just log it.
+      console.warn("Could not speak disease explanation:", err);
     } finally {
       speakBtn.disabled = false;
       speakBtn.classList.remove("playing");

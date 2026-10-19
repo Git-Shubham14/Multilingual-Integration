@@ -244,6 +244,23 @@
       }
     }
   },
+  "cause_by_category": {
+    "fungal": {
+      "en": ["This is a fungal disease. Fungi spread fast in damp, humid weather and when plants are crowded close together."],
+      "mr": {"lines": ["हा बुरशीजन्य रोग आहे. ओलसर, दमट हवामानात आणि झाडे खूप जवळ असल्यास बुरशी वेगाने पसरते."], "reviewed": false},
+      "hi": {"lines": ["यह एक फफूंद जनित रोग है। नम, आर्द्र मौसम में और पौधे पास-पास होने पर फफूंद तेज़ी से फैलती है।"], "reviewed": false}
+    },
+    "bacterial": {
+      "en": ["This is a bacterial disease. Bacteria usually enter through wounds or wet leaves and spread in rainy, humid weather."],
+      "mr": {"lines": ["हा बॅक्टेरियामुळे होणारा रोग आहे. बॅक्टेरिया सहसा जखमेतून किंवा ओल्या पानांतून आत शिरतात आणि पावसाळी, दमट हवामानात पसरतात."], "reviewed": false},
+      "hi": {"lines": ["यह बैक्टीरिया से होने वाला रोग है। बैक्टीरिया अक्सर घाव या गीली पत्तियों से अंदर जाते हैं और बारिश, नमी वाले मौसम में फैलते हैं."], "reviewed": false}
+    },
+    "viral": {
+      "en": ["This is a viral disease. Viruses are usually spread by sucking insects like whitefly or thrips, and there is no cure once a plant is infected."],
+      "mr": {"lines": ["हा विषाणूजन्य रोग आहे. पांढरी माशी, फुलकिडे यांसारख्या रस शोषणाऱ्या किडींमुळे विषाणू पसरतो आणि झाड एकदा संक्रमित झाल्यावर त्यावर इलाज नाही."], "reviewed": false},
+      "hi": {"lines": ["यह विषाणु जनित रोग है। सफ़ेद मक्खी या थ्रिप्स जैसे रस चूसने वाले कीट विषाणु फैलाते हैं, और पौधे के संक्रमित होने के बाद इसका कोई इलाज नहीं है."], "reviewed": false}
+    }
+  },
   "precautions_title": {"en": "Precautions", "mr": "खबरदारी", "hi": "सावधानियाँ"},
   "templates": {
     "en": {

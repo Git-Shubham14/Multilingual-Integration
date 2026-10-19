@@ -1023,22 +1023,58 @@ body {
   font-weight: 600;
 }
 
-.disease-precautions {
+.disease-explanation {
   margin-top: var(--space-sm);
   padding-top: var(--space-sm);
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.disease-precautions-title {
+.disease-explanation-speak-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-sm);
+}
+
+.disease-explanation-speak-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  background: var(--bg-tertiary);
+  color: var(--green-light);
+  cursor: pointer;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition-fast);
+}
+
+.disease-explanation-speak-btn:hover {
+  background: var(--green-glow);
+  border-color: var(--green);
+}
+
+.disease-explanation-speak-btn.playing {
+  animation: spin-slow 2s linear infinite;
+}
+
+.disease-explanation-section {
+  margin-bottom: var(--space-sm);
+}
+
+.disease-explanation-section:last-child {
+  margin-bottom: 0;
+}
+
+.disease-explanation-title {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
-.disease-precautions-list {
-  margin: 0;
-  padding-left: 1.1em;
+.disease-explanation-text {
   color: var(--text-primary);
   font-size: 0.85rem;
   line-height: 1.5;

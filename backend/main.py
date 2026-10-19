@@ -362,6 +362,12 @@ class DiseaseTopGuess(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class DiseaseExplanation(BaseModel):
+    cause: str
+    today: str
+    prevent: str
+
+
 class DiseaseResponse(BaseModel):
     crop: str
     status: str
@@ -372,6 +378,13 @@ class DiseaseResponse(BaseModel):
     precautions: list = []
     precautions_title: str = ""
     top: list[DiseaseTopGuess] = []
+    # Set only when status=="ok" and the top guess isn't healthy. Always
+    # fully populated then (LLM or rules fallback) -- see
+    # _get_disease_explanation.
+    explanation: Optional[DiseaseExplanation] = None
+    # Which LLM produced it ("sarvam"/"nemotron"), or None for the rules
+    # fallback. For logs/debug only.
+    explanation_provider: Optional[str] = None
 
 
 class CropRequest(BaseModel):
@@ -565,6 +578,7 @@ async def disease_check(
     lang = language if language in all_templates else "en"
 
     image_bytes = await image.read()
+    t_total_start = time.perf_counter()
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -609,10 +623,23 @@ async def disease_check(
     note = all_templates[lang]["kvk_note"] if result.get("note") else ""
 
     precautions = []
+    explanation = None
+    explanation_provider = None
+    llm_ms = 0
     if result["status"] == "ok":
         category = _disease_category(result["top"][0]["class"])
         if category != "healthy":
             precautions = _category_precautions(category, lang)
+            t0 = time.perf_counter()
+            explanation_dict, explanation_provider = await _get_disease_explanation(result, lang, category)
+            llm_ms = round((time.perf_counter() - t0) * 1000)
+            explanation = DiseaseExplanation(**explanation_dict)
+
+    total_ms = round((time.perf_counter() - t_total_start) * 1000)
+    logger.info(
+        "Disease timings (ms): llm=%s total=%s provider=%s",
+        llm_ms, total_ms, explanation_provider or "none",
+    )
 
     return DiseaseResponse(
         crop=result["crop"],
@@ -624,6 +651,8 @@ async def disease_check(
         precautions=precautions,
         precautions_title=_precautions_title(lang),
         top=top_guesses,
+        explanation=explanation,
+        explanation_provider=explanation_provider,
     )
 
 
@@ -858,12 +887,15 @@ def pick_provider(module: str, lang: str) -> str:
     """Which LLM backend should answer this request.
 
     Rule for now: English always uses Nemotron (Sarvam is untested for
-    English farmer answers); crop mr/hi uses Sarvam unless CROP_LLM_PROVIDER
-    switches it off. Other modules (chat) aren't routed through Sarvam yet.
+    English farmer answers); crop/disease mr/hi use Sarvam unless their own
+    CROP_LLM_PROVIDER/DISEASE_LLM_PROVIDER switches it off. Chat isn't
+    routed through Sarvam yet.
     """
     if lang == "en":
         return "nemotron"
     if module == "crop" and CROP_LLM_PROVIDER == "nemotron":
+        return "nemotron"
+    if module == "disease" and DISEASE_LLM_PROVIDER == "nemotron":
         return "nemotron"
     return "sarvam"
 
@@ -1333,6 +1365,236 @@ def _apply_crop_validator(llm_crops: list, recommendations: list, language: str)
             validated_by_id[rec["id"]] = _fallback_crop_entry(rec, language, "missing")
 
     return [validated_by_id[rec["id"]] for rec in recommendations]
+
+
+# ─── Disease explanation (Sarvam/Nemotron) ─────────────────────────────────
+# Phase 2: for an actual (non-healthy, non-not_sure) disease result, explain
+# it in 3 parts -- cause, today's non-chemical action, and prevention next
+# time. Same provider chain, 12s budget, daily cap, and logging as crop
+# above; _crop_llm_complete, _crop_text_is_unsafe/_crop_text_is_wrong_language,
+# and _apply_mr_word_fixes are reused as-is (generic despite the "crop"
+# name). The disease name/crop name themselves are NEVER written by the
+# LLM -- disease_check() always builds `message`/`top` from disease_api's
+# class + the checked disease_names.json table, same as before this phase;
+# the LLM only ever fills cause/today/prevent.
+
+DISEASE_LLM_PROVIDER = os.getenv("DISEASE_LLM_PROVIDER", "sarvam")
+# Below this top-guess probability (but still status=="ok", so above
+# disease_api's own 0.7 not_sure cutoff), the prompt is told confidence is
+# low and must tell the farmer to confirm with the local KVK too.
+DISEASE_LOW_CONFIDENCE_THRESHOLD = float(os.getenv("DISEASE_LOW_CONFIDENCE_THRESHOLD", "0.85"))
+
+DISEASE_LLM_SYSTEM_PROMPT = (
+    "You explain a plant disease to a Nashik farmer, in {language}. A "
+    "photo-checking tool has already diagnosed the crop and the disease "
+    "name given below -- use them exactly as given; never rename the "
+    "disease or suggest a different one. Reply ONLY with JSON, no "
+    'markdown, no extra text: {{"cause":"...","today":"...","prevent":'
+    '"..."}}.\n'
+    '"cause": at most 2 short sentences on what this disease is and why '
+    "it happens.\n"
+    '"today": at most 2 short sentences on what to do today WITHOUT any '
+    "chemical, pesticide, or fertilizer.\n"
+    '"prevent": at most 2 short sentences on how to prevent it next '
+    "time.\n"
+    "Base today/prevent closely on the reference precaution lines given "
+    "below -- stay close to their meaning, in simple words. Never mention "
+    "a pesticide, fungicide, or fertilizer name or amount, a dose, a "
+    "price, or a yield/success number."
+)
+
+
+def _cause_text(category: str, language: str) -> str:
+    """Fixed "what it is / why it happens" sentence(s) for a disease
+    category (backend/data/disease_names.json's cause_by_category), used as
+    the rules-fallback for explanation.cause. Same en/mr-hi shape as
+    _category_precautions."""
+    entry = _load_disease_names().get("cause_by_category", {}).get(category)
+    if not entry:
+        return ""
+    if language == "en":
+        lines = entry.get("en", [])
+    else:
+        lang_entry = entry.get(language)
+        lines = lang_entry.get("lines", []) if lang_entry else entry.get("en", [])
+    return " ".join(lines)
+
+
+def _disease_fallback_explanation(category: str, language: str) -> dict:
+    """Rules-only explanation (no LLM): cause from cause_by_category, and
+    today/prevent built from precautions_by_category's existing 3 checked
+    lines -- line[0] (remove/destroy infected material) is "today", and
+    line[1]+line[2] (spacing/drainage/tools, then "ask KVK for the right
+    product") combined are "prevent". No line is dropped."""
+    lines = _category_precautions(category, language)
+    today = lines[0] if lines else ""
+    prevent = " ".join(lines[1:]) if len(lines) > 1 else ""
+    return {"cause": _cause_text(category, language), "today": today, "prevent": prevent}
+
+
+def _disease_sarvam_response_format() -> dict:
+    """Strict JSON schema for Sarvam: exactly cause/today/prevent, all
+    required, no extra fields -- same strict-schema approach as crop's
+    _crop_sarvam_response_format."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "disease_explanation",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "cause": {"type": "string"},
+                    "today": {"type": "string"},
+                    "prevent": {"type": "string"},
+                },
+                "required": ["cause", "today", "prevent"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _parse_disease_explanation_json(raw_text: str) -> Optional[dict]:
+    try:
+        data = json.loads(_strip_code_fence(raw_text))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not all(isinstance(data.get(k), str) and data.get(k).strip() for k in ("cause", "today", "prevent")):
+        return None
+    return {k: data[k].strip() for k in ("cause", "today", "prevent")}
+
+
+async def _disease_try_sarvam(messages: list) -> Optional[str]:
+    """Try Sarvam for the disease explanation. Returns the raw JSON text on
+    success (already checked to parse with all 3 fields), or None -- after
+    logging exactly why -- so the caller falls back to Nemotron. Mirrors
+    crop's _crop_try_sarvam."""
+    response_format = _disease_sarvam_response_format()
+    try:
+        raw_text = await sarvam_chat(messages, response_format=response_format, max_tokens=CROP_LLM_MAX_TOKENS)
+    except SarvamNotConfiguredError:
+        logger.info("Disease LLM fallback sarvam->nemotron (reason=not_configured)")
+        return None
+    except SarvamCapReachedError as e:
+        logger.warning("Disease LLM fallback sarvam->nemotron (reason=cap_reached): %s", e)
+        return None
+    except SarvamHTTPError as e:
+        logger.warning(
+            "Disease LLM fallback sarvam->nemotron (reason=http_error status=%s): %s",
+            e.status_code, e.body[:300],
+        )
+        return None
+    except httpx.TimeoutException:
+        logger.warning("Disease LLM fallback sarvam->nemotron (reason=timeout)")
+        return None
+    except Exception as e:
+        logger.warning("Disease LLM fallback sarvam->nemotron (reason=error): %s", e)
+        return None
+
+    if _parse_disease_explanation_json(raw_text) is None:
+        logger.warning("Disease LLM fallback sarvam->nemotron (reason=bad_json)")
+        return None
+    return raw_text
+
+
+def _apply_disease_explanation_validator(parsed: dict, language: str) -> Optional[dict]:
+    """None if any of the 3 fields is unsafe or wrong-language (the caller
+    then uses the full rules fallback for all 3 -- same coarse,
+    all-or-nothing granularity as crop's per-crop fallback), else the
+    (mr-word-fixed) parsed dict."""
+    texts = [parsed["cause"], parsed["today"], parsed["prevent"]]
+    if any(_crop_text_is_unsafe(t) for t in texts):
+        logger.warning("Disease LLM explanation rejected (unsafe content); using rules fallback")
+        return None
+    if any(_crop_text_is_wrong_language(t, language) for t in texts):
+        logger.warning("Disease LLM explanation rejected (wrong language); using rules fallback")
+        return None
+    if language == "mr":
+        return {k: _apply_mr_word_fixes(v) for k, v in parsed.items()}
+    return parsed
+
+
+def _build_disease_explanation_prompt(result: dict, language: str, category: str) -> list:
+    crop_label = _crop_label(result["crop"], language)
+    disease_label = _disease_label(result["top"][0]["class"], language)
+    low_confidence = result["top"][0]["probability"] < DISEASE_LOW_CONFIDENCE_THRESHOLD
+
+    language_name = LANGUAGE_NAMES.get(language, "English")
+    system_prompt = DISEASE_LLM_SYSTEM_PROMPT.format(language=language_name)
+    if low_confidence:
+        system_prompt += (
+            " The photo-checking tool was not fully sure, so tell the "
+            "farmer to also confirm with the local KVK."
+        )
+    else:
+        system_prompt += " Do not mention the KVK."
+    if language in ("mr", "hi"):
+        system_prompt += (
+            " Write only in Devanagari script. Do not use English letters. "
+            "Use short, simple everyday words."
+        )
+
+    reference_lines = _category_precautions(category, language)
+    reference_text = "\n".join(f"- {line}" for line in reference_lines) if reference_lines else "(none)"
+    user_content = (
+        f"Crop: {crop_label}\nDiagnosed disease: {disease_label}\n\n"
+        "Reference precaution lines for this disease category (checked "
+        f"text; base today/prevent closely on these):\n{reference_text}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
+async def _get_disease_explanation(result: dict, language: str, category: str) -> tuple[dict, Optional[str]]:
+    """Always returns a full {cause, today, prevent} dict (never None) plus
+    the provider that produced it ("sarvam"/"nemotron", or None for rules).
+    Same Sarvam(<=6s) -> Nemotron(rest of 12s, floor 3s) -> rules chain as
+    crop's /api/crop."""
+    messages = _build_disease_explanation_prompt(result, language, category)
+    provider = pick_provider("disease", language)
+
+    parsed = None
+    provider_used = None
+    t0 = time.perf_counter()
+    try:
+        if provider == "sarvam":
+            sarvam_text = await _disease_try_sarvam(messages)
+            if sarvam_text is not None:
+                parsed = _parse_disease_explanation_json(sarvam_text)
+                provider_used = "sarvam"
+
+            if parsed is None:
+                elapsed = time.perf_counter() - t0
+                nemotron_timeout = max(
+                    CROP_PROVIDER_TOTAL_TIMEOUT_S - elapsed, CROP_LLM_MIN_FALLBACK_TIMEOUT_S
+                )
+                raw_text = await _crop_llm_complete(messages, total_timeout=nemotron_timeout)
+                parsed = _parse_disease_explanation_json(raw_text)
+                if parsed is not None:
+                    provider_used = "nemotron"
+        else:
+            raw_text = await _crop_llm_complete(messages)
+            parsed = _parse_disease_explanation_json(raw_text)
+            if parsed is not None:
+                provider_used = "nemotron"
+    except asyncio.TimeoutError:
+        logger.warning("Disease LLM: Nemotron timed out; using rules fallback")
+        parsed = None
+    except Exception as e:
+        logger.warning("Disease LLM failed (%s); using rules fallback", e)
+        parsed = None
+
+    if parsed is not None:
+        validated = _apply_disease_explanation_validator(parsed, language)
+        if validated is not None:
+            return validated, provider_used
+
+    return _disease_fallback_explanation(category, language), None
 
 
 @app.get("/api/crop/options")
