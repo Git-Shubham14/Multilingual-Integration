@@ -67,6 +67,24 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
 # "split": translate to English, LLM answers English-only, translate back.
 CHAT_MODE = os.getenv("CHAT_MODE", "direct")
 
+# Pipeline B2 for mr/hi chat (en is always Nemotron-direct, unaffected by
+# this): Nemotron answers the farmer's original mr/hi question in English,
+# then sarvam-105b rewrites that English answer into natural mr/hi. "b2"
+# (default) tries this; "nemotron" switches it off entirely and chat behaves
+# exactly as before this phase (today's plain Nemotron-direct, _chat_direct).
+CHAT_LLM_PROVIDER = os.getenv("CHAT_LLM_PROVIDER", "b2")
+# Nemotron's English-answer step is capped at this many seconds (its own
+# hedge-to-fallback-model logic runs inside this budget, same hedge pattern
+# as _chat_direct/ _crop_llm_complete).
+CHAT_NEMOTRON_TIMEOUT_S = float(os.getenv("CHAT_NEMOTRON_TIMEOUT_S", "8"))
+# The mr/hi rewrite step (sarvam-105b) is capped at this many seconds,
+# unless less than this is left of CHAT_TOTAL_TIMEOUT_S.
+CHAT_REWRITE_TIMEOUT_S = float(os.getenv("CHAT_REWRITE_TIMEOUT_S", "4"))
+# Whole b2 chain (Nemotron English answer + sarvam rewrite, or the pipeline C
+# fallback) is capped at this many seconds total before giving up and
+# falling back to today's existing plain-Nemotron-direct behaviour.
+CHAT_TOTAL_TIMEOUT_S = float(os.getenv("CHAT_TOTAL_TIMEOUT_S", "14"))
+
 # ─── Disease detection (forwards to Shubham's separate Flask service) ─────────
 
 DISEASE_API_URL = os.getenv("DISEASE_API_URL", "http://127.0.0.1:5002")
@@ -754,14 +772,269 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
     )
 
 
+# ─── Chat pipeline B2 (mr/hi only; CLAUDE.md "Chat LLM provider") ─────────────
+# Nemotron answers the farmer's original mr/hi question in English (reusing
+# FARMER_SYSTEM_PROMPT, same safety rules as _chat_direct), then sarvam-105b
+# rewrites that English answer into natural mr/hi. Falls back to pipeline C
+# (sarvam-105b answers directly in mr/hi) if Nemotron fails/is slow, or if
+# the rewrite fails/is rejected and budget remains; falls back further to
+# today's plain _chat_direct if nothing else worked in time. en is untouched
+# — chat() below always sends it straight to _chat_direct, same as before.
+
+CHAT_REWRITE_SYSTEM_PROMPT = (
+    "Rewrite this farming advice in natural, simple {language} for a "
+    "Nashik farmer. Keep every fact and number exactly. Keep the same "
+    "sentence order. Write all words in Devanagari script, use local "
+    "farming words. Do not add or remove any information. Output only "
+    "the rewritten text."
+)
+
+CHAT_MESSAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "chat_messages.json")
+_chat_messages: Optional[dict] = None
+
+
+def _load_chat_messages() -> dict:
+    """Load backend/data/chat_messages.json once and cache it in memory."""
+    global _chat_messages
+    if _chat_messages is None:
+        with open(CHAT_MESSAGES_PATH, encoding="utf-8") as f:
+            _chat_messages = json.load(f)
+    return _chat_messages
+
+
+def _chat_fallback_message(reply_language: str) -> str:
+    """Fixed mr/hi "couldn't answer right now" text (chat_messages.json,
+    reviewed:false) used when pipeline B2 and pipeline C both fail/are
+    unavailable -- see _chat_pipeline_b2. Never calls Nemotron again here:
+    if Nemotron just failed or is slow, retrying it (_chat_direct's own long
+    hedge/timeout) would only make the farmer wait longer for the same
+    likely outcome."""
+    return _load_chat_messages()["fallback_no_answer"].get(reply_language, "")
+
+
+async def _chat_llm_complete(messages: list, total_timeout: float) -> str:
+    """Hedged Nemotron call for chat's pipeline B2 English-answer step —
+    same hedge pattern as _chat_direct (ask LLM_MODEL, also try
+    LLM_FALLBACK_MODEL after LLM_HEDGE_AFTER seconds, use whichever answers
+    first), but capped at `total_timeout` seconds total so the whole mr/hi
+    chain stays inside CHAT_TOTAL_TIMEOUT_S. Raises asyncio.TimeoutError past
+    that; the caller treats this as "Nemotron failed/slow" and moves on to
+    pipeline C. Every task this call creates is cancelled and drained before
+    returning (see _cancel_and_drain) so a losing hedge request never keeps
+    running in the background."""
+    client = _get_llm_client()
+    all_tasks: list[asyncio.Task] = []
+
+    def complete(model: str):
+        task = asyncio.create_task(client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.5,
+            top_p=0.9,
+            max_tokens=LLM_MAX_TOKENS,
+            extra_body=_llm_extra_body(model),
+        ))
+        all_tasks.append(task)
+        return task
+
+    async def hedge():
+        completion, failed = None, []
+        pending = {complete(LLM_MODEL)}
+        timeout = LLM_HEDGE_AFTER
+        while completion is None:
+            if not pending:
+                raise failed[-1].exception()
+            done, pending = await asyncio.wait(
+                pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                if t.exception():
+                    failed.append(t)
+                elif completion is None:
+                    completion = t.result()
+            if completion is None and timeout is not None and LLM_FALLBACK_MODEL:
+                logger.warning("Chat LLM %s slow or failed; also trying %s", LLM_MODEL, LLM_FALLBACK_MODEL)
+                pending.add(complete(LLM_FALLBACK_MODEL))
+            timeout = None  # hedge only once; then wait for whichever finishes
+        return completion
+
+    try:
+        completion = await asyncio.wait_for(hedge(), timeout=total_timeout)
+        return (completion.choices[0].message.content or "").strip()
+    finally:
+        await _cancel_and_drain(all_tasks)
+
+
+async def _chat_try_sarvam_direct(text: str, reply_language: str, timeout_s: float) -> Optional[str]:
+    """Pipeline C: sarvam-105b answers the farmer's mr/hi question directly
+    (same role/safety rules as _chat_direct's mr/hi prompt). Returns the raw
+    answer text on success, or None -- after logging exactly why -- so the
+    caller falls back to today's plain _chat_direct. Mirrors crop/disease's
+    _crop_try_sarvam / _disease_try_sarvam."""
+    language_name = LANGUAGE_NAMES.get(reply_language, "English")
+    system_prompt = (
+        FARMER_SYSTEM_PROMPT.format(language=language_name)
+        + " Never give addresses, phone numbers, or office locations."
+        + " Write only in Devanagari script. Do not use English letters. "
+          "Use short, simple everyday words."
+    )
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}]
+    try:
+        raw_text = await sarvam_chat(messages, max_tokens=LLM_MAX_TOKENS, timeout_s=timeout_s)
+    except SarvamNotConfiguredError:
+        logger.info("Chat pipeline C unavailable (reason=not_configured)")
+        return None
+    except SarvamCapReachedError as e:
+        logger.warning("Chat pipeline C unavailable (reason=cap_reached): %s", e)
+        return None
+    except SarvamHTTPError as e:
+        logger.warning(
+            "Chat pipeline C unavailable (reason=http_error status=%s): %s",
+            e.status_code, e.body[:300],
+        )
+        return None
+    except httpx.TimeoutException:
+        logger.warning("Chat pipeline C unavailable (reason=timeout)")
+        return None
+    except Exception as e:
+        logger.warning("Chat pipeline C unavailable (reason=error): %s", e)
+        return None
+    return raw_text.strip() or None
+
+
+def _chat_mr_hi_valid(text: str, reply_language: str) -> bool:
+    """True if `text` is non-empty and not wrong-language -- the same
+    all-or-nothing validation crop/disease apply to their LLM text."""
+    return bool(text) and not _crop_text_is_wrong_language(text, reply_language)
+
+
+async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
+    """mr/hi only (chat() below routes en straight to _chat_direct). See the
+    module comment above for the pipeline and its fallback order."""
+    if CHAT_LLM_PROVIDER != "b2":
+        return await _chat_direct(text, reply_language)
+
+    language_name = LANGUAGE_NAMES.get(reply_language, "English")
+    t_total_start = time.perf_counter()
+    timings = {"nemotron_en_ms": 0, "rewrite_ms": 0, "pipeline_c_ms": 0, "total_ms": 0}
+
+    # Step 1: Nemotron answers the original mr/hi question in English.
+    english_answer = None
+    t0 = time.perf_counter()
+    try:
+        system_prompt_en = (
+            FARMER_SYSTEM_PROMPT.format(language="English")
+            + " Answer in simple English, 3-5 sentences. Never give "
+              "addresses, phone numbers, or office locations."
+        )
+        messages = [{"role": "system", "content": system_prompt_en}, {"role": "user", "content": text}]
+        answer = await _chat_llm_complete(messages, total_timeout=CHAT_NEMOTRON_TIMEOUT_S)
+        english_answer = answer or None
+    except Exception as e:
+        logger.warning("Chat B2: Nemotron English step failed (%s)", e)
+        english_answer = None
+    timings["nemotron_en_ms"] = round((time.perf_counter() - t0) * 1000)
+
+    # Step 2: sarvam-105b rewrites the English answer into natural mr/hi.
+    # Budget is capped at whatever's left of CHAT_TOTAL_TIMEOUT_S -- no
+    # minimum-floor override here (unlike crop/disease's shared helpers),
+    # so this step can never push the whole chain past 14s.
+    final_text = None
+    if english_answer:
+        elapsed = time.perf_counter() - t_total_start
+        remaining = CHAT_TOTAL_TIMEOUT_S - elapsed
+        if remaining > 0:
+            rewrite_budget = min(CHAT_REWRITE_TIMEOUT_S, remaining)
+            t0 = time.perf_counter()
+            try:
+                rewrite_messages = [
+                    {"role": "system", "content": CHAT_REWRITE_SYSTEM_PROMPT.format(language=language_name)},
+                    {"role": "user", "content": english_answer},
+                ]
+                rewritten = await sarvam_chat(rewrite_messages, max_tokens=LLM_MAX_TOKENS, timeout_s=rewrite_budget)
+                rewritten = rewritten.strip()
+                if _chat_mr_hi_valid(rewritten, reply_language):
+                    final_text = _apply_mr_word_fixes(rewritten) if reply_language == "mr" else rewritten
+                else:
+                    logger.warning("Chat B2: rewrite rejected (empty or wrong-language)")
+            except SarvamNotConfiguredError:
+                logger.info("Chat B2: rewrite unavailable (reason=not_configured)")
+            except SarvamCapReachedError as e:
+                logger.warning("Chat B2: rewrite unavailable (reason=cap_reached): %s", e)
+            except SarvamHTTPError as e:
+                logger.warning(
+                    "Chat B2: rewrite unavailable (reason=http_error status=%s): %s",
+                    e.status_code, e.body[:300],
+                )
+            except httpx.TimeoutException:
+                logger.warning("Chat B2: rewrite timed out")
+            except Exception as e:
+                logger.warning("Chat B2: rewrite failed (%s)", e)
+            timings["rewrite_ms"] = round((time.perf_counter() - t0) * 1000)
+
+    path = "b2" if final_text else None
+
+    # Step 3 (fallback): pipeline C, only if there's still budget left, and
+    # capped at exactly what's left -- same reasoning as the rewrite step
+    # above, so b2 + c together can never exceed CHAT_TOTAL_TIMEOUT_S.
+    if final_text is None:
+        elapsed = time.perf_counter() - t_total_start
+        remaining = CHAT_TOTAL_TIMEOUT_S - elapsed
+        if remaining > 0:
+            t0 = time.perf_counter()
+            pipeline_c_text = await _chat_try_sarvam_direct(text, reply_language, remaining)
+            timings["pipeline_c_ms"] = round((time.perf_counter() - t0) * 1000)
+            if _chat_mr_hi_valid(pipeline_c_text, reply_language):
+                final_text = _apply_mr_word_fixes(pipeline_c_text) if reply_language == "mr" else pipeline_c_text
+                path = "c"
+
+    timings["total_ms"] = round((time.perf_counter() - t_total_start) * 1000)
+
+    if final_text is None:
+        # Both b2 and pipeline C failed/were unavailable. Nemotron likely
+        # just failed or is slow, so retrying it via _chat_direct (its own
+        # long hedge/timeout) would only make the farmer wait longer for the
+        # same likely outcome -- a short fixed message instead.
+        logger.info("Chat path=none (b2 and c both failed/unavailable) timings=%s", timings)
+        fallback_text = _chat_fallback_message(reply_language)
+        return ChatResponse(
+            response=fallback_text,
+            response_en="",
+            question_en=text,
+            timings={"translate_in": 0, "llm": timings["total_ms"], "translate_out": 0, "total": timings["total_ms"]},
+            translation_failed=False,
+        )
+
+    logger.info("Chat path=%s timings=%s", path, timings)
+    return ChatResponse(
+        # Only pipeline B2 (path "b2") ever produces a real English answer;
+        # pipeline C (path "c") answers mr/hi directly, so response_en is
+        # left empty rather than filled with mr/hi text under an "_en" name.
+        response=final_text,
+        response_en=english_answer if path == "b2" else "",
+        question_en=text,
+        timings={"translate_in": 0, "llm": timings["total_ms"], "translate_out": 0, "total": timings["total_ms"]},
+        translation_failed=False,
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
     Send the farmer's question to the NVIDIA-hosted LLM.
 
-    The LLM always answers in English — it must never write Marathi or Hindi
-    itself, since that isn't checked the way disease names are. For mr/hi,
-    the question is translated to English first and the English answer is
+    CHAT_MODE=direct (default): mr/hi goes through pipeline B2
+    (_chat_pipeline_b2 — Nemotron answers in English, sarvam-105b rewrites to
+    mr/hi), with pipeline C (sarvam answers mr/hi directly) as its fallback
+    and a short fixed message as the last resort if both fail; en always
+    goes straight to _chat_direct, unaffected by this phase.
+    CHAT_LLM_PROVIDER=nemotron switches pipeline B2/C off entirely and keeps
+    using _chat_direct for mr/hi too, exactly as before this phase.
+
+    CHAT_MODE=split (not the default, untouched by this phase): the LLM
+    always answers in English — it must never write Marathi or Hindi itself,
+    since that isn't checked the way disease names are. For mr/hi, the
+    question is translated to English first and the English answer is
     translated back afterwards; for en, both hops are skipped.
     """
     text = request.text.strip()
@@ -771,6 +1044,8 @@ async def chat(request: ChatRequest):
     reply_language = request.reply_language or "en"
 
     if CHAT_MODE == "direct":
+        if reply_language in ("mr", "hi"):
+            return await _chat_pipeline_b2(text, reply_language)
         return await _chat_direct(text, reply_language)
 
     needs_translation = reply_language != "en"
@@ -888,8 +1163,9 @@ def pick_provider(module: str, lang: str) -> str:
 
     Rule for now: English always uses Nemotron (Sarvam is untested for
     English farmer answers); crop/disease mr/hi use Sarvam unless their own
-    CROP_LLM_PROVIDER/DISEASE_LLM_PROVIDER switches it off. Chat isn't
-    routed through Sarvam yet.
+    CROP_LLM_PROVIDER/DISEASE_LLM_PROVIDER switches it off. Chat's own mr/hi
+    routing (pipeline B2/C, CHAT_LLM_PROVIDER) is separate -- see
+    _chat_pipeline_b2 -- since it isn't a single explain-step call.
     """
     if lang == "en":
         return "nemotron"

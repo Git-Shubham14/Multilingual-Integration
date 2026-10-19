@@ -94,12 +94,20 @@ async def _reserve_request_slot() -> None:
         _write_usage(usage)
 
 
-async def sarvam_chat(messages: list, response_format: Optional[dict] = None, max_tokens: int = 800) -> str:
+async def sarvam_chat(
+    messages: list,
+    response_format: Optional[dict] = None,
+    max_tokens: int = 800,
+    timeout_s: Optional[float] = None,
+) -> str:
     """
     Call sarvam-105b with `messages` (OpenAI-style chat messages) and return
     the assistant's text. `response_format`, if given, is passed through
     unchanged (e.g. an OpenAI-style strict json_schema) so the caller can
-    force structured output.
+    force structured output. `timeout_s`, if given, overrides the default
+    SARVAM_TIMEOUT_S env setting for this one call only (used by chat's
+    pipeline B2/C, whose own per-step budgets can be smaller than crop/
+    disease's shared default).
 
     reasoning_effort is ALWAYS None -- sarvam-105b otherwise spends its whole
     token budget "thinking" and returns an empty answer (seen while testing
@@ -115,7 +123,7 @@ async def sarvam_chat(messages: list, response_format: Optional[dict] = None, ma
 
     await _reserve_request_slot()
 
-    timeout = float(os.getenv("SARVAM_TIMEOUT_S", "6"))
+    timeout = timeout_s if timeout_s is not None else float(os.getenv("SARVAM_TIMEOUT_S", "6"))
     payload = {
         "model": SARVAM_MODEL,
         "messages": messages,

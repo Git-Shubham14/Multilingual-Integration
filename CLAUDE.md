@@ -116,6 +116,32 @@ The frontend never calls port 5002 directly. The backend forwards the request.
   `/api/disease` route (never freeform LLM text, per the disease-names rule above) -- the
   disease result is for the report, not yet implemented.
 
+## Chat LLM provider (pipeline B2, added 2026-10-20)
+- `/api/chat` is still single-turn: no chat history is sent to the LLM (the SQLite
+  history in `backend/models/db.py` is only for the sidebar UI). Both text chat and
+  voice chat call the same endpoint; neither streams -- one JSON response per request.
+- For mr/hi (en is untouched, always straight to Nemotron): Nemotron first answers the
+  farmer's original mr/hi question in English, then sarvam-105b rewrites that English
+  answer into natural mr/hi (`_chat_pipeline_b2` in `backend/main.py`). Controlled by
+  `CHAT_LLM_PROVIDER` ("b2" default, or "nemotron" to switch this off entirely and keep
+  today's plain Nemotron-direct mr/hi behaviour, `_chat_direct`, as before this phase).
+- Fallback order: Nemotron slow/fails -> pipeline C (sarvam-105b answers mr/hi directly)
+  -> if the rewrite fails validation and budget remains, also try pipeline C -> if both
+  b2 and C fail, a short fixed "couldn't answer, try again" message from
+  `backend/data/chat_messages.json` (reviewed:false) -- NOT a second call to
+  `_chat_direct`, since Nemotron likely just failed/is slow and retrying it would only
+  make the farmer wait longer for the same outcome.
+- Whole chain (Nemotron English answer + sarvam rewrite, or the pipeline C fallback) is
+  capped at `CHAT_TOTAL_TIMEOUT_S` (14s) total; `CHAT_NEMOTRON_TIMEOUT_S` (8s) and
+  `CHAT_REWRITE_TIMEOUT_S` (4s) cap their own steps, never letting the chain run over.
+- Validation on the final mr/hi text reuses crop/disease's existing wrong-language check
+  and `mr_word_fixes.json`. `response_en` in the API response is only ever real English
+  on the b2 path; it's empty on pipeline C and the fixed-message fallback (no English
+  text exists there, so it's never filled with mr/hi under an "_en" name).
+- Sarvam calls share the same daily cap/usage file as crop/disease (`sarvam_usage.json`).
+- Tested in `backend/scripts/compare_chat_b2.py` before building this; see
+  `backend/tests/test_chat_provider.py` for the mocked fallback-chain tests.
+
 ## Git and safety rules
 - Work on the branch `integration`. Never push to `main` or to a remote without asking Shubham.
 - Never print, log, commit or paste API keys. `.env`, `venv/` and `disease_api/model/` stay out of git.
