@@ -907,20 +907,34 @@ _mr_word_fixes: Optional[dict] = None
 _crop_llm_client_instance: Optional[AsyncOpenAI] = None
 
 CROP_LLM_SYSTEM_PROMPT = (
-    "You explain crop options to a Nashik farmer. Use ONLY the crops and "
-    "evidence given below. Reply ONLY with JSON, no markdown, no extra text: "
-    '{{"crops":[{{"id":"...","reason":"...","risk":"..."}}]}} in {language}. '
-    "Return exactly one entry for EACH crop id listed, in the same order. "
-    "Use the ids exactly as given. Each reason and risk must be at most 2 "
-    "short sentences. Never mention pesticide or fertilizer names or "
-    "amounts, yields, prices, profit, or success chances. Do not quote "
-    "humidity or temperature numbers. If unsure, say to confirm with the "
-    "local KVK. Do not mention any months or dates; the app shows the "
-    "sowing months separately. The evidence comes from a drought "
-    "contingency plan. Mention drought advice only if the weather shows a "
-    "dry spell. Do not copy table fragments like 'No rabi crop'. Risk must "
-    "be different from reason. If a crop's data is not verified, write one "
-    "short reason and say in the risk to confirm with KVK."
+    "You explain crop options to a Nashik farmer, using ONLY the crops, "
+    "evidence, and the farmer's own inputs given below. Reply ONLY with "
+    'JSON, no markdown, no extra text: {{"crops":[{{"id":"...","reason":'
+    '"...","risk":"..."}}]}} in {language}. Return exactly one entry for '
+    "EACH crop id listed, in the same order, using the ids exactly as "
+    "given.\n"
+    '"reason": 1-2 short sentences (at most about 25 words) on WHY this '
+    "crop fits the farmer's OWN inputs -- the sowing season, the soil "
+    "type, whether irrigation is available, and the rotation after the "
+    "previous crop -- using only whichever of these the evidence given "
+    "actually supports for this crop. Never put any uncertainty in "
+    "reason.\n"
+    '"risk": exactly 1 short sentence naming one real field risk for this '
+    "crop (water shortage, bad weather, pests, or disease -- never a "
+    "pesticide or fertilizer name or amount). If this crop's sowing "
+    "window is only estimated from its season, or its data is marked not "
+    "verified, say that in risk as well and tell the farmer to confirm "
+    "with the local KVK.\n"
+    "reason and risk must never be the same sentence or near-duplicate "
+    "wording -- each must say something the other does not. Never "
+    "mention pesticide or fertilizer names or amounts, yields, prices, "
+    "profit, or success chances. Do not quote humidity or temperature "
+    "numbers, or any specific month name, month number, or date -- the "
+    "app shows the sowing months separately; you may name the general "
+    "sowing season (e.g. this sowing season, rabi season) if it helps "
+    "explain the fit. The evidence comes from a drought contingency "
+    "plan; mention drought advice only if the weather shows a dry spell. "
+    "Do not copy table fragments like 'No rabi crop'."
 )
 
 # Pesticide/chemical words the LLM must never use (copied from
@@ -1038,10 +1052,20 @@ def _apply_mr_word_fixes(text: str) -> str:
     language=mr. Matches a standalone space-separated token with its
     surrounding punctuation stripped, never a substring of a longer word --
     except for a Marathi suffix from _MR_WORD_FIX_SUFFIXES glued directly
-    onto the end of a known Hindi word, which is also fixed in place."""
+    onto the end of a known Hindi word, which is also fixed in place.
+
+    A handful of fixes.json entries are multi-word phrases (e.g.
+    "केव्हीके शी" -> "केव्हीकेशी", where the LLM wrongly puts a space inside
+    "KVK"+"शी"). Those can't go through the per-token loop below (each
+    token is one space-separated word), so they're replaced as plain
+    substrings first."""
     if not text:
         return text
     fixes = _load_mr_word_fixes()
+
+    for key, replacement in fixes.items():
+        if " " in key:
+            text = text.replace(key, replacement)
 
     def _fix_token(token: str) -> str:
         core = token.strip(_MR_WORD_FIX_TRIM)
@@ -1428,7 +1452,13 @@ async def crop_check(request: CropRequest):
             f"sowing_months={rec.get('sowing_months')} reasons=[{reasons}]"
         )
     weather_line = f"Weather: {json.dumps(weather)}" if weather else "Weather: unavailable"
+    farmer_inputs_line = (
+        f"Farmer's own inputs: taluka={request.taluka}, sowing_month={request.sowing_month}, "
+        f"irrigation={request.irrigation}, previous_crop={request.previous_crop or 'none'}, "
+        f"soil_type={request.soil_type or 'unknown'}"
+    )
     user_content = (
+        farmer_inputs_line + "\n\n" +
         "Crops:\n" + "\n".join(crop_lines) + "\n" + weather_line +
         "\n\nEvidence (ICAR Nashik contingency plan):\n" + evidence_text
     )
@@ -1438,10 +1468,10 @@ async def crop_check(request: CropRequest):
     if lang == "mr":
         crop_system_prompt += (
             " Use common Marathi farming words, for example पेरणी for "
-            "sowing (not बुवाई). Use Marathi month names and words, not "
-            "Hindi. Example of the expected style: "
-            '{"id":"chickpea","reason":"ऑक्टोबरमध्ये पेरणीसाठी योग्य पीक आहे.",'
-            '"risk":"पाणी कमी असल्यास उत्पादन कमी होऊ शकते."}'
+            "sowing (not बुवाई), not Hindi. Example of the expected style: "
+            '{"id":"chickpea","reason":"भारी जमिनीत व पाण्याची सुविधा '
+            'असल्याने हे पीक या हंगामात चांगले येऊ शकते.","risk":"पावसाचा '
+            'अंदाज चुकल्यास पाण्याचा ताण येऊ शकतो."}'
         )
     if lang in ("mr", "hi"):
         crop_system_prompt += (

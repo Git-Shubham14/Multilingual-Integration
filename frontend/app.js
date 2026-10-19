@@ -1965,7 +1965,18 @@ const App = (() => {
       if (crop.risk) parts.push(crop.risk);
     });
     if (result.disclaimer) parts.push(result.disclaimer);
-    return parts.join(". ");
+    return _joinSpokenParts(parts);
+  }
+
+  // Each part (reason/risk/disclaimer) from the backend already ends with
+  // its own full stop ("." or the Devanagari "।"), so a plain
+  // parts.join(". ") produces a double stop ("A.. B."). Strip each part's
+  // trailing stop before joining, then add exactly one back at the end.
+  function _joinSpokenParts(parts) {
+    const cleaned = parts
+      .map((p) => (p || "").trim().replace(/[.।]+$/, "").trim())
+      .filter(Boolean);
+    return cleaned.length ? `${cleaned.join(". ")}.` : "";
   }
 
   async function _speakCropAdvice(result, language, speakBtn) {

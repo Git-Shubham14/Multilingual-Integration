@@ -162,6 +162,35 @@ def test_valid_llm_reply_is_used_as_is():
     assert wheat["sowing_months"] == [10, 11]
 
 
+def test_crop_prompt_includes_the_farmers_own_inputs():
+    # The LLM's "reason" is supposed to explain the fit using the farmer's
+    # own season/soil/irrigation/rotation -- it can only do that if those
+    # inputs are actually sent in the prompt, not just crop_api's own
+    # (already-derived) per-crop reasons.
+    crop_api_response = _mock_crop_api_response(FAKE_CROP_API_RESPONSE)
+    captured_messages = []
+
+    async def fake_llm_complete(messages, total_timeout=None):
+        captured_messages.append(messages)
+        return (
+            '{"crops":[{"id":"wheat","reason":"चांगली जमीन आहे.","risk":"कमी धोका आहे."},'
+            '{"id":"chickpea","reason":"कमी पाण्यात येतो.","risk":"किडीचा धोका कमी."}]}'
+        )
+
+    with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=crop_api_response)), \
+         patch.object(main, "_crop_llm_complete", fake_llm_complete):
+        response = client.post("/api/crop", json=CROP_REQUEST_BODY)
+
+    assert response.status_code == 200
+    assert len(captured_messages) == 1
+    user_content = captured_messages[0][1]["content"]
+    assert f"taluka={CROP_REQUEST_BODY['taluka']}" in user_content
+    assert f"sowing_month={CROP_REQUEST_BODY['sowing_month']}" in user_content
+    assert f"irrigation={CROP_REQUEST_BODY['irrigation']}" in user_content
+    assert f"previous_crop={CROP_REQUEST_BODY['previous_crop']}" in user_content
+    assert f"soil_type={CROP_REQUEST_BODY['soil_type']}" in user_content
+
+
 def test_llm_reply_with_unknown_crop_id_is_ignored():
     crop_api_response = _mock_crop_api_response(FAKE_CROP_API_RESPONSE)
     llm_json = (
@@ -268,6 +297,23 @@ def test_mr_word_fixes_handles_alternate_hindi_spellings():
     # the same Hindi months as सितंबर/नवंबर/अक्टूबर, seen from the LLM too.
     assert main._apply_mr_word_fixes("सितम्बर") == "सप्टेंबर"
     assert main._apply_mr_word_fixes("अक्टोबर") == "ऑक्टोबर"
+
+
+def test_mr_word_fixes_handles_multiword_phrase():
+    # "केव्हीके शी" is a multi-word fixes.json key (the LLM wrongly puts a
+    # space inside "KVK"+"शी") -- it can't go through the per-token loop,
+    # so _apply_mr_word_fixes must also do a plain substring pass for it.
+    text = "आपल्या जवळच्या केव्हीके शी संपर्क करा."
+    assert main._apply_mr_word_fixes(text) == "आपल्या जवळच्या केव्हीकेशी संपर्क करा."
+
+
+def test_crop_validator_applies_multiword_mr_word_fix_to_llm_text():
+    recs = [{"id": "chickpea", "names": {"en": "Chickpea"}, "reasons": []}]
+    llm_crops = [{"id": "chickpea", "reason": "शंका असल्यास केव्हीके शी संपर्क करा.", "risk": "कमी धोका."}]
+    result = main._apply_crop_validator(llm_crops, recs, "mr")
+    chickpea = result[0]
+    assert chickpea["source"] == "llm"
+    assert chickpea["reason"] == "शंका असल्यास केव्हीकेशी संपर्क करा."
     assert main._apply_mr_word_fixes("नवम्बर") == "नोव्हेंबर"
 
 
