@@ -567,6 +567,7 @@ body {
   border: 1px solid var(--bubble-bot-border);
   color: var(--text-primary);
   border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
+  white-space: pre-line;
 }
 
 /* Bot TTS Marathi bubble */

@@ -59,7 +59,7 @@ from utils.text_cleaner import clean_for_translation
 # Third-party models on NVIDIA's free tier (DeepSeek, Gemma, GLM, Kimi) are
 # often queued for minutes; NVIDIA's own Nemotron models respond in seconds.
 LLM_MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
-LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "")
 LLM_HEDGE_AFTER = float(os.getenv("LLM_HEDGE_AFTER", "8"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "40"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
@@ -195,17 +195,28 @@ def _build_disease_message(result: dict, language: str) -> str:
 FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
     "Always reply in {language} using simple, everyday words a farmer understands. "
-    "Keep answers short: at most 4 sentences, plain words, practical and "
-    "actionable. Never name a specific pesticide, fungicide, or fertilizer "
-    "brand, and never give a dose, quantity, or mixing ratio — these vary by "
-    "product and a wrong amount can harm the crop or the farmer. Instead "
-    "tell the farmer to follow the instructions on the product label and to "
-    "contact the local Krishi Vigyan Kendra (KVK) or agriculture extension "
-    "officer for the right product and dose. Where useful, mention "
-    "non-chemical steps first: removing and destroying infected leaves, "
-    "proper plant spacing, and good drainage. Your reply will be read aloud "
-    "by a text-to-speech engine, so write plain sentences only: no markdown, "
-    "no bullet points or symbols like - or *, no headings, no emojis, no tables."
+    "Answer as 4-6 short points, each on its own line starting with \"• \" "
+    "(bullet, then a space). Plain text only: no headings, no markdown, no "
+    "numbering, no emojis, no tables. "
+    "Be specific to THIS crop and THIS problem: name the likely cause from the "
+    "symptoms described, and give crop-specific steps and timing -- not "
+    "generic advice. Do not add a stock line (such as 'keep proper spacing' "
+    "or 'contact KVK') unless it genuinely applies here. If the crop or "
+    "growth stage was not given, state that assumption in your first point. "
+    "Give non-chemical steps first: removing and destroying infected leaves, "
+    "proper plant spacing, good drainage, crop rotation. If a spray is truly "
+    "needed, you may name the active ingredient (for example, mancozeb), but "
+    "only one registered for use in India, never a banned one -- and never "
+    "give a dose, quantity, or mixing ratio, since a wrong amount can harm "
+    "the crop or the farmer: say to use the dose on the product label. Seed "
+    "rate, spacing, and fertilizer amounts may be given as rough, "
+    "approximate figures, and you should suggest checking the farmer's Soil "
+    "Health Card for exact fertilizer doses. For market-price questions, "
+    "point the farmer to their local APMC market or the e-NAM portal rather "
+    "than quoting a price yourself. If the question is not about farming, "
+    "politely decline and say you can only help with farming questions. "
+    "Your reply will be read aloud by a text-to-speech engine after the "
+    "bullet markers are removed, so keep each point a short, plain sentence."
 )
 
 ORIGINAL_LANGUAGE_LABELS = {"mr": "Marathi", "hi": "Hindi"}
@@ -783,8 +794,12 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
 
 CHAT_REWRITE_SYSTEM_PROMPT = (
     "Rewrite this farming advice in natural, simple {language} for a "
-    "Nashik farmer. Keep every fact and number exactly. Keep the same "
-    "sentence order. Write all words in Devanagari script, use local "
+    "Nashik farmer. Keep every fact and number exactly. The text is a list "
+    "of points, each starting with \"• \" (bullet, then a space) on its "
+    "own line -- keep exactly that many points, in the same order, each "
+    "still starting with \"• \" on its own line. Write all words, "
+    "including product or active-ingredient names, in Devanagari script -- "
+    "never add the English word in brackets alongside it. Use local "
     "farming words. Do not add or remove any information. Output only "
     "the rewritten text."
 )
@@ -924,8 +939,7 @@ async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
     try:
         system_prompt_en = (
             FARMER_SYSTEM_PROMPT.format(language="English")
-            + " Answer in simple English, 3-5 sentences. Never give "
-              "addresses, phone numbers, or office locations."
+            + " Never give addresses, phone numbers, or office locations."
         )
         messages = [{"role": "system", "content": system_prompt_en}, {"role": "user", "content": text}]
         answer = await _chat_llm_complete(messages, total_timeout=CHAT_NEMOTRON_TIMEOUT_S)
