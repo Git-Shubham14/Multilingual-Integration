@@ -1904,11 +1904,17 @@ const App = (() => {
 
     const thumbnailDataUrl = await _makeLeafThumbnail(file);
     ChatUI.addUserPhoto(thumbnailDataUrl, crop);
-    const historyReady = ChatHistory.ensureChatId(`${crop} leaf photo`)
-      .then(() => API.saveMessage(ChatHistory.getChatId(), "user", "user_photo", {
+    // History saves are best-effort and must never delay or break the real
+    // disease check: the chat id is never awaited here, each save is fired
+    // off on its own and only console.warn's on failure, never throwing
+    // into the try/catch below that handles the real request's errors.
+    const historyChatId = ChatHistory.ensureChatId(`${crop} leaf photo`);
+    historyChatId
+      .then((chatId) => API.saveMessage(chatId, "user", "user_photo", {
         thumbnail: thumbnailDataUrl,
         crop,
-      }));
+      }))
+      .catch((err) => console.warn("Could not save leaf photo to history:", err));
     const loadingEl = ChatUI.addDiseaseLoading("Checking your leaf...");
 
     try {
@@ -1916,11 +1922,12 @@ const App = (() => {
       loadingEl.remove();
       ChatUI.addDiseaseResult(result, labels, (speakBtn) => _speakDiseaseExplanation(result, lang, speakBtn));
       await _speakDiseaseMessage(result);
-      await historyReady;
-      await API.saveMessage(ChatHistory.getChatId(), "bot", "disease_result", {
-        result,
-        reply_language: lang,
-      });
+      historyChatId
+        .then((chatId) => API.saveMessage(chatId, "bot", "disease_result", {
+          result,
+          reply_language: lang,
+        }))
+        .catch((err) => console.warn("Could not save disease result to history:", err));
     } catch (err) {
       loadingEl.remove();
       ChatUI.addError(_friendlyDiseaseError(err));
@@ -2029,11 +2036,18 @@ const App = (() => {
 
     const requestLines = _buildCropRequestLines(formData, lang);
     ChatUI.addCropRequest(labels.requestTitle, requestLines);
-    await ChatHistory.ensureChatId(labels.modalTitle);
-    await API.saveMessage(ChatHistory.getChatId(), "user", "crop_request", {
-      lines: requestLines,
-      reply_language: lang,
-    });
+    // History saves are best-effort and must never delay or break the real
+    // crop-advice request: the chat id is never awaited here, each save is
+    // fired off on its own and only console.warn's on failure, never
+    // throwing into the try/catch below that handles the real request's
+    // errors.
+    const historyChatId = ChatHistory.ensureChatId(labels.modalTitle);
+    historyChatId
+      .then((chatId) => API.saveMessage(chatId, "user", "crop_request", {
+        lines: requestLines,
+        reply_language: lang,
+      }))
+      .catch((err) => console.warn("Could not save crop request to history:", err));
 
     const loadingEl = ChatUI.addDiseaseLoading(labels.loading);
 
@@ -2042,10 +2056,12 @@ const App = (() => {
       loadingEl.remove();
       if (Array.isArray(result.crops) && result.crops.length > 0) {
         ChatUI.addCropResult(result, labels, (speakBtn) => _speakCropAdvice(result, lang, speakBtn));
-        await API.saveMessage(ChatHistory.getChatId(), "bot", "crop_result", {
-          result,
-          reply_language: lang,
-        });
+        historyChatId
+          .then((chatId) => API.saveMessage(chatId, "bot", "crop_result", {
+            result,
+            reply_language: lang,
+          }))
+          .catch((err) => console.warn("Could not save crop result to history:", err));
       } else {
         // service_down/no_crops/400 all land here as a normal message —
         // result.message (or disclaimer alone) is already in the farmer's language.

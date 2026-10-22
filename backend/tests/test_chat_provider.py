@@ -191,3 +191,38 @@ def test_cap_reached_skips_sarvam_entirely_and_uses_fixed_message(sarvam_configu
     # The cap must stop sarvam_chat() before it ever calls Sarvam's HTTP API,
     # for both the rewrite attempt and the pipeline C attempt.
     assert calls == []
+
+
+# ─── _add_full_stops_to_bullets ──────────────────────────────────────────
+# Bullet points sometimes come back from the LLM without a trailing full
+# stop, which runs the points together in the chat bubble and gives
+# text-to-speech no pause between them.
+
+def test_add_full_stops_adds_missing_period():
+    text = "• पहिला मुद्दा\n• Second point"
+    result = main._add_full_stops_to_bullets(text)
+    assert result == "• पहिला मुद्दा.\n• Second point."
+
+
+def test_add_full_stops_leaves_existing_punctuation_alone():
+    text = "• Already ends with a period.\n• Already a question?\n• Already excited!\n• पूर्ण वाक्य आहे।"
+    result = main._add_full_stops_to_bullets(text)
+    assert result == text
+
+
+def test_add_full_stops_never_doubles_up_the_danda():
+    text = "• ही माहिती पूर्ण आहे।"
+    result = main._add_full_stops_to_bullets(text)
+    assert result == text
+    assert not result.endswith("।.")
+
+
+def test_add_full_stops_ignores_non_bullet_lines():
+    text = "Just a plain sentence with no bullet marker"
+    result = main._add_full_stops_to_bullets(text)
+    assert result == text
+
+
+def test_add_full_stops_handles_empty_text():
+    assert main._add_full_stops_to_bullets("") == ""
+    assert main._add_full_stops_to_bullets(None) is None

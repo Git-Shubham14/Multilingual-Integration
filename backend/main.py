@@ -196,8 +196,8 @@ FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
     "Always reply in {language} using simple, everyday words a farmer understands. "
     "Answer as 4-6 short points, each on its own line starting with \"• \" "
-    "(bullet, then a space). Plain text only: no headings, no markdown, no "
-    "numbering, no emojis, no tables. "
+    "(bullet, then a space) and ending with a full stop. Plain text only: "
+    "no headings, no markdown, no numbering, no emojis, no tables. "
     "Be specific to THIS crop and THIS problem: name the likely cause from the "
     "symptoms described, and give crop-specific steps and timing -- not "
     "generic advice. Do not add a stock line (such as 'keep proper spacing' "
@@ -226,6 +226,25 @@ ORIGINAL_LANGUAGE_LABELS = {"mr": "Marathi", "hi": "Hindi"}
 
 # Used by CHAT_MODE=direct to fill FARMER_SYSTEM_PROMPT's {language}.
 LANGUAGE_NAMES = {"mr": "Marathi", "hi": "Hindi", "en": "English"}
+
+
+def _add_full_stops_to_bullets(text: str) -> str:
+    """Add a closing full stop to any "• " point that doesn't already
+    end with one -- the prompt asks the LLM for this, but models don't
+    always comply, and without it the points run together in the chat
+    bubble and text-to-speech gets no pause between them. Always adds a
+    plain period; an existing Devanagari danda ("।") still counts as
+    already punctuated, so it is never doubled up."""
+    if not text:
+        return text
+    end_chars = (".", "?", "!", "।")
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        trimmed = line.rstrip()
+        if trimmed.lstrip().startswith("•") and trimmed and not trimmed.endswith(end_chars):
+            trimmed = trimmed + "."
+        lines[i] = trimmed
+    return "\n".join(lines)
 
 # ─── Farm glossary (fixed mr/hi terms, see CLAUDE.md on disease names) ────────
 
@@ -767,6 +786,7 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
             t.cancel()
 
         response_text = (completion.choices[0].message.content or "").strip()
+        response_text = _add_full_stops_to_bullets(response_text)
     except HTTPException:
         raise
     except Exception as e:
@@ -798,9 +818,10 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
 CHAT_REWRITE_SYSTEM_PROMPT = (
     "Rewrite this farming advice in natural, simple {language} for a "
     "Nashik farmer. Keep every fact and number exactly. The text is a list "
-    "of points, each starting with \"• \" (bullet, then a space) on its "
-    "own line -- keep exactly that many points, in the same order, each "
-    "still starting with \"• \" on its own line. Write all words, "
+    "of points, each starting with \"• \" (bullet, then a space) and "
+    "ending with a full stop, on its own line -- keep exactly that many "
+    "points, in the same order, each still starting with \"• \" and ending "
+    "with a full stop, on its own line. Write all words, "
     "including product or active-ingredient names, in Devanagari script -- "
     "never add the English word in brackets alongside it. Use local "
     "farming words. Do not add or remove any information. Output only "
@@ -972,6 +993,7 @@ async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
                 rewritten = rewritten.strip()
                 if _chat_mr_hi_valid(rewritten, reply_language):
                     final_text = _apply_mr_word_fixes(rewritten) if reply_language == "mr" else rewritten
+                    final_text = _add_full_stops_to_bullets(final_text)
                 else:
                     logger.warning("Chat B2: rewrite rejected (empty or wrong-language)")
             except SarvamNotConfiguredError:
@@ -1003,6 +1025,7 @@ async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
             timings["pipeline_c_ms"] = round((time.perf_counter() - t0) * 1000)
             if _chat_mr_hi_valid(pipeline_c_text, reply_language):
                 final_text = _apply_mr_word_fixes(pipeline_c_text) if reply_language == "mr" else pipeline_c_text
+                final_text = _add_full_stops_to_bullets(final_text)
                 path = "c"
 
     timings["total_ms"] = round((time.perf_counter() - t_total_start) * 1000)
