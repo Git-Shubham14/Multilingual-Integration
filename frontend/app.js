@@ -934,6 +934,35 @@ const ChatUI = (() => {
   }
 
   /**
+   * Add a user-side bubble listing the farmer's Crop Advisor form inputs
+   * (one "label: value" row per line, already localized by the caller --
+   * see App._buildCropRequestLines). Reuses the plain user-text bubble
+   * style; each row is its own block element, so no CSS change is needed
+   * to keep them on separate lines.
+   */
+  function addCropRequest(title, lines) {
+    _hideWelcome();
+    const msg = document.createElement("div");
+    msg.className = "message user";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.appendChild(_createLabel(title));
+    const bubble = document.createElement("div");
+    bubble.className = "bubble user-text";
+    (lines || []).forEach(({ label, value }) => {
+      const row = document.createElement("div");
+      row.textContent = `${label}: ${value}`;
+      bubble.appendChild(row);
+    });
+    body.appendChild(bubble);
+    msg.appendChild(_createAvatar("user"));
+    msg.appendChild(body);
+    _chatArea.appendChild(msg);
+    _scrollToBottom();
+    return msg;
+  }
+
+  /**
    * Add a "Checking your leaf..." loading bubble (bot side, returns element to remove later)
    */
   function addDiseaseLoading(text) {
@@ -1194,6 +1223,7 @@ const ChatUI = (() => {
     addTypingBubble,
     addTTSResult,
     addUserPhoto,
+    addCropRequest,
     addDiseaseLoading,
     addDiseaseResult,
     addCropResult,
@@ -1317,6 +1347,7 @@ const CropI18n = (() => {
   const STRINGS = {
     buttonLabel:  { mr: "पीक सल्ला", hi: "फसल सलाह", en: "Crop Advisor" },
     modalTitle:   { mr: "🌾 पीक सल्ला", hi: "🌾 फसल सलाह", en: "🌾 Crop Advisor" },
+    requestTitle: { mr: "🌾 पीक सल्ला विनंती", hi: "🌾 फसल सलाह अनुरोध", en: "🌾 Crop advice request" },
     taluka:       { mr: "तालुका", hi: "तालुका", en: "Taluka" },
     sowingMonth:  { mr: "पेरणीचा महिना", hi: "बुवाई का महीना", en: "Sowing month" },
     irrigation:   { mr: "पाण्याची सुविधा आहे का?", hi: "सिंचाई की सुविधा है?", en: "Irrigation available?" },
@@ -1614,6 +1645,9 @@ const App = (() => {
         const cLabels = CropI18n.getLabels(msg.content.reply_language);
         ChatUI.addCropResult(msg.content.result, cLabels, (speakBtn) =>
           _speakCropAdvice(msg.content.result, msg.content.reply_language, speakBtn));
+      } else if (msg.msg_type === "crop_request") {
+        const rLabels = CropI18n.getLabels(msg.content.reply_language);
+        ChatUI.addCropRequest(rLabels.requestTitle, msg.content.lines);
       }
     });
     CropPicker.init((crop) => {
@@ -1951,6 +1985,39 @@ const App = (() => {
     }
   }
 
+  // ── Resolve the farmer's raw form values (taluka English name, soil-type
+  //    and previous-crop ids) to the same localized text the dropdowns show,
+  //    using the already-cached options + CropI18n's own form labels. Skips
+  //    soil type / previous crop when left empty; taluka/month/irrigation
+  //    always have a value so are always included. ─────────────────────
+  function _buildCropRequestLines(formData, lang) {
+    const labels = CropI18n.getLabels(lang);
+    const opts = _cropOptionsCache || {};
+    const lines = [];
+
+    const taluka = (opts.talukas || []).find((t) => t.en === formData.taluka);
+    lines.push({ label: labels.taluka, value: (taluka && (taluka[lang] || taluka.en)) || formData.taluka });
+
+    lines.push({ label: labels.sowingMonth, value: labels.monthName(formData.sowing_month) });
+
+    if (formData.soil_type) {
+      const soil = (opts.soil_types || []).find((s) => s.id === formData.soil_type);
+      lines.push({ label: labels.soilType, value: (soil && (soil[lang] || soil.en)) || formData.soil_type });
+    }
+
+    lines.push({ label: labels.irrigation, value: formData.irrigation === "yes" ? labels.yes : labels.no });
+
+    if (formData.previous_crop) {
+      const crop = (opts.crops || []).find((c) => c.id === formData.previous_crop);
+      lines.push({
+        label: labels.previousCrop,
+        value: (crop && crop.names && (crop.names[lang] || crop.names.en)) || formData.previous_crop,
+      });
+    }
+
+    return lines;
+  }
+
   async function _handleCropAdvisorSubmit(formData) {
     if (_isProcessing) return;
     _isProcessing = true;
@@ -1959,6 +2026,15 @@ const App = (() => {
 
     const lang = LanguageSelector.getLanguage();
     const labels = CropI18n.getLabels(lang);
+
+    const requestLines = _buildCropRequestLines(formData, lang);
+    ChatUI.addCropRequest(labels.requestTitle, requestLines);
+    await ChatHistory.ensureChatId(labels.modalTitle);
+    await API.saveMessage(ChatHistory.getChatId(), "user", "crop_request", {
+      lines: requestLines,
+      reply_language: lang,
+    });
+
     const loadingEl = ChatUI.addDiseaseLoading(labels.loading);
 
     try {
@@ -1966,7 +2042,6 @@ const App = (() => {
       loadingEl.remove();
       if (Array.isArray(result.crops) && result.crops.length > 0) {
         ChatUI.addCropResult(result, labels, (speakBtn) => _speakCropAdvice(result, lang, speakBtn));
-        await ChatHistory.ensureChatId(labels.modalTitle);
         await API.saveMessage(ChatHistory.getChatId(), "bot", "crop_result", {
           result,
           reply_language: lang,
