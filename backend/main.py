@@ -195,7 +195,8 @@ def _build_disease_message(result: dict, language: str) -> str:
 FARMER_SYSTEM_PROMPT = (
     "You are Krishi Mitra, an agricultural advisor for small farmers in India. "
     "Always reply in {language} using simple, everyday words a farmer understands. "
-    "Answer as 4-6 short points, each on its own line starting with \"• \" "
+    "Answer as 4-5 short points, each at most about 15 words, on its own "
+    "line starting with \"• \" "
     "(bullet, then a space) and ending with a full stop. Plain text only: "
     "no headings, no markdown, no numbering, no emojis, no tables. "
     "Be specific to THIS crop and THIS problem: name the likely cause from the "
@@ -815,6 +816,19 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
 # today's plain _chat_direct if nothing else worked in time. en is untouched
 # — chat() below always sends it straight to _chat_direct, same as before.
 
+# Local pest/disease words Nemotron has misread in practice when answering
+# in English straight from the farmer's original mr/hi text (e.g. it read
+# "आळी" as "aphid" instead of "caterpillar/larva" -- these don't all have a
+# single correct English word, so a short hint in the prompt is cheaper and
+# safer than trusting the model to already know them).
+CHAT_PEST_GLOSSARY_HINT = (
+    "Local pest/disease words the farmer may use, read them correctly: "
+    "आळी/सुंडी = caterpillar or larva (e.g. bollworm); बोंडअळी = bollworm; "
+    "मावा/माहू = aphid; तुडतुडे = jassid/leafhopper; फुलकिडे/थ्रिप्स = thrips; "
+    "पांढरी माशी/सफेद मक्खी = whitefly; करपा = blight; भुरी = powdery mildew; "
+    "डावणी = downy mildew."
+)
+
 CHAT_REWRITE_SYSTEM_PROMPT = (
     "Rewrite this farming advice in natural, simple {language} for a "
     "Nashik farmer. Keep every fact and number exactly. The text is a list "
@@ -942,9 +956,10 @@ async def _chat_try_sarvam_direct(text: str, reply_language: str, timeout_s: flo
 
 
 def _chat_mr_hi_valid(text: str, reply_language: str) -> bool:
-    """True if `text` is non-empty and not wrong-language -- the same
-    all-or-nothing validation crop/disease apply to their LLM text."""
-    return bool(text) and not _crop_text_is_wrong_language(text, reply_language)
+    """True if `text` is non-empty and not wrong-language, using chat's
+    relaxed 70%-Devanagari check (_chat_text_is_wrong_language) rather than
+    crop/disease's stricter all-or-nothing rule."""
+    return bool(text) and not _chat_text_is_wrong_language(text, reply_language)
 
 
 async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
@@ -964,6 +979,7 @@ async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
         system_prompt_en = (
             FARMER_SYSTEM_PROMPT.format(language="English")
             + " Never give addresses, phone numbers, or office locations."
+            + " " + CHAT_PEST_GLOSSARY_HINT
         )
         messages = [{"role": "system", "content": system_prompt_en}, {"role": "user", "content": text}]
         answer = await _chat_llm_complete(messages, total_timeout=CHAT_NEMOTRON_TIMEOUT_S)
@@ -1348,6 +1364,36 @@ def _crop_text_is_wrong_language(text: str, language: str) -> bool:
     if language not in ("mr", "hi") or not text:
         return False
     return any(word.upper() not in _ALLOWED_LATIN_WORDS for word in _LATIN_WORD_PATTERN.findall(text))
+
+
+_DEVANAGARI_CHAR_PATTERN = re.compile(r"[ऀ-ॿ]")
+
+
+def _chat_text_is_wrong_language(text: str, language: str) -> bool:
+    """Chat-only wrong-language check, relaxed from _crop_text_is_wrong_language
+    above (which rejects on ANY disallowed Latin word). Real farmer chat
+    questions mix in Latin-script crop/product names often enough that the
+    strict rule was rejecting good mr/hi answers outright -- e.g. for
+    "द्राक्षांच्या पानावर काळे ठिपके" both pipeline B2's rewrite and pipeline C
+    got rejected, leaving the farmer with just the fixed fallback message.
+    Chat instead accepts the text as long as at least 70% of its letters are
+    Devanagari. Logs the first 80 chars and the Latin words found whenever it
+    rejects, to make the next bad case easy to find."""
+    if language not in ("mr", "hi") or not text:
+        return False
+    devanagari_count = len(_DEVANAGARI_CHAR_PATTERN.findall(text))
+    latin_words = _LATIN_WORD_PATTERN.findall(text)
+    latin_count = sum(len(w) for w in latin_words)
+    total_letters = devanagari_count + latin_count
+    if total_letters == 0:
+        return False
+    is_wrong = (devanagari_count / total_letters) < 0.70
+    if is_wrong:
+        logger.warning(
+            "Chat wrong-language check rejected text (first 80 chars=%r, latin_words=%s)",
+            text[:80], latin_words,
+        )
+    return is_wrong
 
 
 def _load_crop_messages() -> dict:

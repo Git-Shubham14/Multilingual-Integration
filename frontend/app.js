@@ -20,6 +20,7 @@ const Config = (() => {
     voice: "Sunita",
     hfToken: "hf_your_token_here",
     language: "mr",
+    voiceSpeed: 1.25,
   };
 
   let _settings = { ...DEFAULTS };
@@ -601,6 +602,20 @@ const ChatUI = (() => {
   // pause it (see addTTSResult's "play" listener below).
   let _activeAudio = null;
 
+  // Voice playback speed, shared by every voice bubble (chat/crop/disease
+  // all go through addTTSResult below) -- cycles 1x -> 1.25x -> 1.5x and is
+  // remembered across bubbles and reloads via Config/localStorage.
+  const _TTS_SPEEDS = [1, 1.25, 1.5];
+
+  function _getVoiceSpeed() {
+    const saved = Config.get("voiceSpeed");
+    return _TTS_SPEEDS.includes(saved) ? saved : 1.25;
+  }
+
+  function _setVoiceSpeed(speed) {
+    Config.save({ voiceSpeed: speed }); // Config.save already wraps localStorage in try/catch
+  }
+
   function init(chatArea, welcomeScreen) {
     _chatArea = chatArea;
     _welcomeScreen = welcomeScreen;
@@ -797,6 +812,15 @@ const ChatUI = (() => {
     replayBtn.innerHTML = "↺";
     replayBtn.setAttribute("aria-label", "Replay Marathi speech");
 
+    // Speed button -- cycles 1x -> 1.25x -> 1.5x, shared across all voice
+    // bubbles (see _getVoiceSpeed/_setVoiceSpeed above).
+    const speedBtn = document.createElement("button");
+    speedBtn.className = "tts-btn tts-speed-btn";
+    speedBtn.title = "Playback speed";
+    speedBtn.setAttribute("aria-label", "Change playback speed");
+    let _currentSpeed = _getVoiceSpeed();
+    speedBtn.textContent = `${_currentSpeed}x`;
+
     // Progress bar
     const progressBar = document.createElement("div");
     progressBar.className = "tts-progress";
@@ -816,6 +840,7 @@ const ChatUI = (() => {
 
     controls.appendChild(playBtn);
     controls.appendChild(replayBtn);
+    controls.appendChild(speedBtn);
     controls.appendChild(progressBar);
     controls.appendChild(timeEl);
     controls.appendChild(voiceBadge);
@@ -834,6 +859,8 @@ const ChatUI = (() => {
     // out of sync with what is actually playing (this is what let a stuck
     // ▶/⏸ icon and overlapping audio happen before). ──────────────────
     const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`);
+    audio.playbackRate = _currentSpeed;
+    audio.preservesPitch = true;
     let highlightInterval = null;
 
     function _updateHighlight() {
@@ -899,6 +926,14 @@ const ChatUI = (() => {
     replayBtn.addEventListener("click", () => {
       audio.currentTime = 0;
       audio.play();
+    });
+
+    speedBtn.addEventListener("click", () => {
+      const nextIdx = (_TTS_SPEEDS.indexOf(_currentSpeed) + 1) % _TTS_SPEEDS.length;
+      _currentSpeed = _TTS_SPEEDS[nextIdx];
+      audio.playbackRate = _currentSpeed;
+      speedBtn.textContent = `${_currentSpeed}x`;
+      _setVoiceSpeed(_currentSpeed);
     });
 
     return msg;
