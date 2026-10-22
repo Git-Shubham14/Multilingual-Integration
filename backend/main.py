@@ -750,6 +750,8 @@ async def _chat_direct(text: str, reply_language: str) -> ChatResponse:
             " Write only in Devanagari script. Do not use English letters. "
             "Use short, simple everyday words."
         )
+    if reply_language == "mr":
+        system_prompt += CHAT_MR_VOCAB_HINT
 
     logger.info(
         "LLM chat request (%s) CHAT_MODE=direct reply_language=%s question_en=%s",
@@ -853,6 +855,24 @@ CHAT_REWRITE_SYSTEM_PROMPT = (
     "the rewritten text."
 )
 
+# Marathi-specific pest/disease vocabulary and phrasing mistakes seen in
+# live testing: wrong word for a plant part, the same part named twice in
+# one sentence, a wrong disposal method for damaged parts, or a diagnosis
+# stated as certain. mr only -- matches this codebase's existing pattern
+# (_apply_mr_word_fixes/mr_word_fixes.json) that Marathi output needs this
+# extra correction and Hindi hasn't shown the same mistakes.
+CHAT_MR_VOCAB_HINT = (
+    " Use correct Marathi farmer words: square (cotton bud) is \"पाती\", "
+    "flower is \"फुले\", boll is \"बोंड\", larva is \"अळी\", bollworm is "
+    "\"बोंडअळी\", moth is \"पतंग\", leaf is \"पान\", vine is \"वेल\". Never "
+    "name the same plant part twice in one sentence (for example, never "
+    "\"बोंड आणि बोंडांना\" or \"बोंडे आणि कोवळी बोंडे\") -- name different "
+    "plant parts instead. Damaged plant parts (leaves, squares, bolls, "
+    "shoots) must be \"गोळा करून जाळा किंवा खोल गाडून टाका\"; only "
+    "hand-picked larvae may be dropped into soapy water. For a diagnosis, "
+    "say \"असू शकते\", never \"नक्की\"."
+)
+
 CHAT_MESSAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "chat_messages.json")
 _chat_messages: Optional[dict] = None
 
@@ -942,6 +962,8 @@ async def _chat_try_sarvam_direct(text: str, reply_language: str, timeout_s: flo
         + " Write only in Devanagari script. Do not use English letters. "
           "Use short, simple everyday words."
     )
+    if reply_language == "mr":
+        system_prompt += CHAT_MR_VOCAB_HINT
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}]
     try:
         raw_text = await sarvam_chat(messages, max_tokens=LLM_MAX_TOKENS, timeout_s=timeout_s)
@@ -1012,8 +1034,11 @@ async def _chat_pipeline_b2(text: str, reply_language: str) -> ChatResponse:
             rewrite_budget = min(CHAT_REWRITE_TIMEOUT_S, remaining)
             t0 = time.perf_counter()
             try:
+                rewrite_system_prompt = CHAT_REWRITE_SYSTEM_PROMPT.format(language=language_name)
+                if reply_language == "mr":
+                    rewrite_system_prompt += CHAT_MR_VOCAB_HINT
                 rewrite_messages = [
-                    {"role": "system", "content": CHAT_REWRITE_SYSTEM_PROMPT.format(language=language_name)},
+                    {"role": "system", "content": rewrite_system_prompt},
                     {"role": "user", "content": english_answer},
                 ]
                 rewritten = await sarvam_chat(rewrite_messages, max_tokens=LLM_MAX_TOKENS, timeout_s=rewrite_budget)
