@@ -6,8 +6,8 @@
    - Config        : Settings management (API URL, voice, HF token)
    - API           : Backend calls (speech-to-text, text-to-speech)
    - SpeechInput   : Mic recording + Web Speech API live transcript
-   - TTSPlayer     : Audio playback + word highlighting
-   - ChatUI        : Message rendering
+   - ChatUI        : Message rendering (each TTS bubble owns its own
+                      <audio> element + word highlighting)
    - App           : Main coordinator
    ============================================================ */
 
@@ -298,6 +298,14 @@ const DiseaseCheck = (() => {
 /* ─── Chat History ───────────────────────────────────────── */
 const ChatHistory = (() => {
   let currentChatId = null;
+  let _resultRenderer = null;
+
+  // App registers a handler here for msg_types ChatHistory itself doesn't
+  // know how to render (disease/crop results, leaf photos) -- those need
+  // callbacks (onSpeak) that live in App, not here.
+  function setResultRenderer(fn) {
+    _resultRenderer = fn;
+  }
 
   async function ensureChatId(title) {
     if (!currentChatId) {
@@ -364,6 +372,8 @@ const ChatHistory = (() => {
           );
         } else if (msg.msg_type === "bot_text") {
           ChatUI.addBotText("Voice not available", msg.content.ai_response);
+        } else if (_resultRenderer) {
+          _resultRenderer(msg);
         }
       }
     } catch (err) {
@@ -416,7 +426,7 @@ const ChatHistory = (() => {
 
   function getChatId() { return currentChatId; }
 
-  return { init, ensureChatId, getChatId };
+  return { init, ensureChatId, getChatId, setResultRenderer };
 })();
 
 
@@ -440,150 +450,6 @@ const Toast = (() => {
   }
 
   return { show };
-})();
-
-
-/* ─── TTS Player ─────────────────────────────────────────── */
-const TTSPlayer = (() => {
-  let _audioCtx = null;
-  let _sourceNode = null;
-  let _audioBuffer = null;
-  let _wordTimings = [];
-  let _startTime = 0;
-  let _pausedAt = 0;
-  let _isPlaying = false;
-  let _highlightInterval = null;
-  let _onWordChange = null;
-  let _onProgress = null;
-  let _onEnd = null;
-
-  function _getAudioCtx() {
-    if (!_audioCtx || _audioCtx.state === "closed") {
-      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    return _audioCtx;
-  }
-
-  async function load(base64Audio, wordTimings, callbacks = {}) {
-    stop();
-    _wordTimings = wordTimings || [];
-    _onWordChange = callbacks.onWordChange || null;
-    _onProgress = callbacks.onProgress || null;
-    _onEnd = callbacks.onEnd || null;
-    _pausedAt = 0;
-
-    const ctx = _getAudioCtx();
-    const bytes = Uint8Array.from(atob(base64Audio), (c) => c.charCodeAt(0));
-    _audioBuffer = await ctx.decodeAudioData(bytes.buffer);
-
-    // Scale word timings to match exact decoded audio duration
-    if (_wordTimings.length > 0 && _audioBuffer && _audioBuffer.duration > 0) {
-      const actualDuration = _audioBuffer.duration;
-      // Get the backend's estimated duration from the last word's end time, or 1.0
-      const estimatedDuration = _wordTimings[_wordTimings.length - 1].end || 1.0;
-      const scale = actualDuration / estimatedDuration;
-
-      _wordTimings = _wordTimings.map(w => ({
-        word: w.word,
-        start: w.start * scale,
-        end: w.end * scale
-      }));
-    }
-  }
-
-  function _startHighlighting(offsetTime = 0) {
-    if (_highlightInterval) clearInterval(_highlightInterval);
-
-    _highlightInterval = setInterval(() => {
-      if (!_isPlaying) return;
-
-      const ctx = _audioCtx;
-      const elapsed = ctx.currentTime - _startTime + offsetTime;
-      const total = _audioBuffer ? _audioBuffer.duration : 1;
-      const progress = Math.min((elapsed / total) * 100, 100);
-
-      if (_onProgress) _onProgress(progress, elapsed, total);
-
-      // Find current word
-      let activeIdx = -1;
-      for (let i = 0; i < _wordTimings.length; i++) {
-        const w = _wordTimings[i];
-        if (elapsed >= w.start && elapsed < w.end) {
-          activeIdx = i;
-          break;
-        }
-      }
-      if (_onWordChange) _onWordChange(activeIdx, elapsed);
-
-      if (elapsed >= total) {
-        _finishPlayback();
-      }
-    }, 50);
-  }
-
-  function _finishPlayback() {
-    _isPlaying = false;
-    if (_highlightInterval) clearInterval(_highlightInterval);
-    if (_onEnd) _onEnd();
-    if (_onWordChange) _onWordChange(-1, 0);
-    if (_onProgress) _onProgress(0, 0, 1);
-    _pausedAt = 0;
-  }
-
-  function play(fromOffset = 0) {
-    if (!_audioBuffer) return;
-    stop();
-
-    const ctx = _getAudioCtx();
-    if (ctx.state === "suspended") ctx.resume();
-
-    _sourceNode = ctx.createBufferSource();
-    _sourceNode.buffer = _audioBuffer;
-    _sourceNode.connect(ctx.destination);
-    _sourceNode.start(0, fromOffset);
-    _sourceNode.onended = () => {
-      if (_isPlaying) _finishPlayback();
-    };
-
-    _startTime = ctx.currentTime - fromOffset;
-    _isPlaying = true;
-    _startHighlighting(fromOffset);
-  }
-
-  function stop() {
-    if (_sourceNode) {
-      try {
-        _sourceNode.stop();
-        _sourceNode.disconnect();
-      } catch (e) { /* ignore */ }
-      _sourceNode = null;
-    }
-    _isPlaying = false;
-    if (_highlightInterval) {
-      clearInterval(_highlightInterval);
-      _highlightInterval = null;
-    }
-  }
-
-  function pause() {
-    if (!_isPlaying || !_audioCtx) return;
-    _pausedAt = _audioCtx.currentTime - _startTime;
-    stop();
-  }
-
-  function resume() {
-    play(_pausedAt);
-  }
-
-  function replay() {
-    _pausedAt = 0;
-    play(0);
-  }
-
-  function isPlaying() { return _isPlaying; }
-  function isPaused() { return !_isPlaying && _pausedAt > 0; }
-
-  return { load, play, stop, pause, resume, replay, isPlaying, isPaused };
 })();
 
 
@@ -731,6 +597,9 @@ const SpeechInput = (() => {
 const ChatUI = (() => {
   let _chatArea;
   let _welcomeScreen;
+  // The <audio> currently playing, if any -- so a newly-started bubble can
+  // pause it (see addTTSResult's "play" listener below).
+  let _activeAudio = null;
 
   function init(chatArea, welcomeScreen) {
     _chatArea = chatArea;
@@ -959,55 +828,77 @@ const ChatUI = (() => {
     _chatArea.appendChild(msg);
     _scrollToBottom();
 
-    // ── Wire up TTS player ──────────────────────────────────
-    let playerLoaded = false;
+    // ── One real <audio> element for this bubble. The button icon and the
+    // word highlighting only ever react to the audio element's own
+    // play/pause/ended events -- never set by hand -- so they can't drift
+    // out of sync with what is actually playing (this is what let a stuck
+    // ▶/⏸ icon and overlapping audio happen before). ──────────────────
+    const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`);
+    let highlightInterval = null;
 
-    async function _ensureLoaded() {
-      if (playerLoaded) return;
-      playerLoaded = true;
-      await TTSPlayer.load(audioBase64, wordTimings, {
-        onWordChange: (activeIdx) => {
-          wordSpans.forEach((span, i) => {
-            span.classList.toggle("active", i === activeIdx);
-            span.classList.toggle("spoken", activeIdx >= 0 && i < activeIdx);
-          });
-        },
-        onProgress: (pct, elapsed, total) => {
-          progressFill.style.width = pct + "%";
-          timeEl.textContent = `${_formatTime(elapsed)} / ${_formatTime(total)}`;
-        },
-        onEnd: () => {
-          playBtn.innerHTML = "▶";
-          playBtn.classList.remove("playing");
-          wordSpans.forEach((s) => s.classList.remove("active", "spoken"));
-          progressFill.style.width = "0%";
-          timeEl.textContent = `0:00 / ${_formatTime(duration)}`;
-        },
+    function _updateHighlight() {
+      const total = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration;
+      const elapsed = audio.currentTime;
+      const pct = Math.min((elapsed / total) * 100, 100);
+      progressFill.style.width = pct + "%";
+      timeEl.textContent = `${_formatTime(elapsed)} / ${_formatTime(total)}`;
+
+      let activeIdx = -1;
+      for (let i = 0; i < wordTimings.length; i++) {
+        const w = wordTimings[i];
+        if (elapsed >= w.start && elapsed < w.end) {
+          activeIdx = i;
+          break;
+        }
+      }
+      wordSpans.forEach((span, i) => {
+        span.classList.toggle("active", i === activeIdx);
+        span.classList.toggle("spoken", activeIdx >= 0 && i < activeIdx);
       });
     }
 
-    playBtn.addEventListener("click", async () => {
-      await _ensureLoaded();
-      if (TTSPlayer.isPlaying()) {
-        TTSPlayer.pause();
-        playBtn.innerHTML = "▶";
-        playBtn.classList.remove("playing");
-      } else if (TTSPlayer.isPaused()) {
-        TTSPlayer.resume();
-        playBtn.innerHTML = "⏸";
-        playBtn.classList.add("playing");
-      } else {
-        TTSPlayer.play(0);
-        playBtn.innerHTML = "⏸";
-        playBtn.classList.add("playing");
+    // Placeholder until the browser has actually decoded the file --
+    // the backend's `duration` is only a byte-length estimate and can be
+    // badly wrong for a long paragraph.
+    audio.addEventListener("loadedmetadata", () => {
+      if (isFinite(audio.duration)) {
+        timeEl.textContent = `0:00 / ${_formatTime(audio.duration)}`;
       }
     });
 
-    replayBtn.addEventListener("click", async () => {
-      await _ensureLoaded();
-      TTSPlayer.replay();
+    audio.addEventListener("play", () => {
+      if (_activeAudio && _activeAudio !== audio) _activeAudio.pause();
+      _activeAudio = audio;
       playBtn.innerHTML = "⏸";
       playBtn.classList.add("playing");
+      if (highlightInterval) clearInterval(highlightInterval);
+      highlightInterval = setInterval(_updateHighlight, 50);
+    });
+
+    audio.addEventListener("pause", () => {
+      playBtn.innerHTML = "▶";
+      playBtn.classList.remove("playing");
+      if (highlightInterval) {
+        clearInterval(highlightInterval);
+        highlightInterval = null;
+      }
+    });
+
+    audio.addEventListener("ended", () => {
+      wordSpans.forEach((s) => s.classList.remove("active", "spoken"));
+      progressFill.style.width = "0%";
+      timeEl.textContent = `0:00 / ${_formatTime(isFinite(audio.duration) ? audio.duration : duration)}`;
+      audio.currentTime = 0;
+    });
+
+    playBtn.addEventListener("click", () => {
+      if (audio.paused) audio.play();
+      else audio.pause();
+    });
+
+    replayBtn.addEventListener("click", () => {
+      audio.currentTime = 0;
+      audio.play();
     });
 
     return msg;
@@ -1016,7 +907,7 @@ const ChatUI = (() => {
   /**
    * Add a user leaf-photo thumbnail bubble
    */
-  function addUserPhoto(thumbnailUrl, crop) {
+  function addUserPhoto(thumbnailDataUrl, crop) {
     _hideWelcome();
     const msg = document.createElement("div");
     msg.className = "message user";
@@ -1025,12 +916,15 @@ const ChatUI = (() => {
     body.appendChild(_createLabel(`Leaf Photo (${crop})`));
     const bubble = document.createElement("div");
     bubble.className = "bubble photo-bubble";
-    const img = document.createElement("img");
-    img.className = "photo-thumbnail";
-    img.src = thumbnailUrl;
-    img.alt = `${crop} leaf photo`;
-    img.addEventListener("load", () => URL.revokeObjectURL(thumbnailUrl));
-    bubble.appendChild(img);
+    if (thumbnailDataUrl) {
+      const img = document.createElement("img");
+      img.className = "photo-thumbnail";
+      img.src = thumbnailDataUrl;
+      img.alt = `${crop} leaf photo`;
+      bubble.appendChild(img);
+    } else {
+      bubble.textContent = `📷 ${crop} leaf photo`;
+    }
     body.appendChild(bubble);
     msg.appendChild(_createAvatar("user"));
     msg.appendChild(body);
@@ -1709,6 +1603,19 @@ const App = (() => {
     LanguageSelector.init();
     Settings.init();
     ChatHistory.init();
+    ChatHistory.setResultRenderer((msg) => {
+      if (msg.msg_type === "user_photo") {
+        ChatUI.addUserPhoto(msg.content.thumbnail, msg.content.crop);
+      } else if (msg.msg_type === "disease_result") {
+        const dLabels = DiseaseI18n.getLabels(msg.content.reply_language);
+        ChatUI.addDiseaseResult(msg.content.result, dLabels, (speakBtn) =>
+          _speakDiseaseExplanation(msg.content.result, msg.content.reply_language, speakBtn));
+      } else if (msg.msg_type === "crop_result") {
+        const cLabels = CropI18n.getLabels(msg.content.reply_language);
+        ChatUI.addCropResult(msg.content.result, cLabels, (speakBtn) =>
+          _speakCropAdvice(msg.content.result, msg.content.reply_language, speakBtn));
+      }
+    });
     CropPicker.init((crop) => {
       _pendingCrop = crop;
       _photoInput.click();
@@ -1906,6 +1813,53 @@ const App = (() => {
     }
   }
 
+  // ── Shrink a leaf photo to a small thumbnail for history (max 256px,
+  //    JPEG ~0.7 quality). Never throws: on any failure (bad image, canvas
+  //    error, or the result coming out too large) it resolves to null, and
+  //    callers then fall back to showing/saving plain text instead of a
+  //    photo. The full-size `file` is never touched -- it still goes to
+  //    the disease API unchanged. ──────────────────────────────────────
+  function _makeLeafThumbnail(file) {
+    const MAX_SIDE = 256;
+    const MAX_DATA_URL_LEN = 150000; // ~110KB of image data -- generous for a 256px JPEG
+    return new Promise((resolve) => {
+      let objectUrl;
+      try {
+        objectUrl = URL.createObjectURL(file);
+      } catch (e) {
+        resolve(null);
+        return;
+      }
+      const img = new Image();
+      const cleanup = () => {
+        try { URL.revokeObjectURL(objectUrl); } catch (e) { /* ignore */ }
+      };
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, MAX_SIDE / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+          cleanup();
+          resolve(dataUrl && dataUrl.length <= MAX_DATA_URL_LEN ? dataUrl : null);
+        } catch (e) {
+          cleanup();
+          resolve(null);
+        }
+      };
+      img.onerror = () => {
+        cleanup();
+        resolve(null);
+      };
+      img.src = objectUrl;
+    });
+  }
+
   // ── Leaf photo upload → disease check ───────────────────
   async function _handlePhotoUpload(file, crop) {
     if (_isProcessing) return;
@@ -1914,8 +1868,13 @@ const App = (() => {
     const lang = LanguageSelector.getLanguage();
     const labels = DiseaseI18n.getLabels(lang);
 
-    const thumbnailUrl = URL.createObjectURL(file);
-    ChatUI.addUserPhoto(thumbnailUrl, crop);
+    const thumbnailDataUrl = await _makeLeafThumbnail(file);
+    ChatUI.addUserPhoto(thumbnailDataUrl, crop);
+    const historyReady = ChatHistory.ensureChatId(`${crop} leaf photo`)
+      .then(() => API.saveMessage(ChatHistory.getChatId(), "user", "user_photo", {
+        thumbnail: thumbnailDataUrl,
+        crop,
+      }));
     const loadingEl = ChatUI.addDiseaseLoading("Checking your leaf...");
 
     try {
@@ -1923,6 +1882,11 @@ const App = (() => {
       loadingEl.remove();
       ChatUI.addDiseaseResult(result, labels, (speakBtn) => _speakDiseaseExplanation(result, lang, speakBtn));
       await _speakDiseaseMessage(result);
+      await historyReady;
+      await API.saveMessage(ChatHistory.getChatId(), "bot", "disease_result", {
+        result,
+        reply_language: lang,
+      });
     } catch (err) {
       loadingEl.remove();
       ChatUI.addError(_friendlyDiseaseError(err));
@@ -2002,6 +1966,11 @@ const App = (() => {
       loadingEl.remove();
       if (Array.isArray(result.crops) && result.crops.length > 0) {
         ChatUI.addCropResult(result, labels, (speakBtn) => _speakCropAdvice(result, lang, speakBtn));
+        await ChatHistory.ensureChatId(labels.modalTitle);
+        await API.saveMessage(ChatHistory.getChatId(), "bot", "crop_result", {
+          result,
+          reply_language: lang,
+        });
       } else {
         // service_down/no_crops/400 all land here as a normal message —
         // result.message (or disclaimer alone) is already in the farmer's language.

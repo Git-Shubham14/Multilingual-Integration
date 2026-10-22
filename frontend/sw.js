@@ -3,7 +3,7 @@
    Caches app shell for offline use
    ========================================================= */
 
-const CACHE_NAME = "marathi-translator-v10";
+const CACHE_NAME = "marathi-translator-v11";
 const APP_SHELL = [
   "./",
   "./index.html",
